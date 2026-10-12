@@ -3,6 +3,7 @@ import logging
 import pymysql
 import os
 import hashlib
+import re
 
 # ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,7 +17,6 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 def get_db():
-    """获取 MySQL 连接（不指定数据库，用于建库）"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -27,7 +27,6 @@ def get_db():
     return conn
 
 def init_db():
-    """初始化：建库、建表、建索引"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -65,7 +64,6 @@ def init_db():
         conn.close()
 
 def generate_item_id(name):
-    """根据物资名称生成唯一ID"""
     return hashlib.md5(name.encode()).hexdigest()[:8]
 
 # 启动时自动初始化
@@ -73,7 +71,6 @@ init_db()
 
 # ================= 工具函数 =================
 def get_item_with_stock(item_id):
-    """获取单个物资的实时库存"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -93,9 +90,13 @@ def get_item_with_stock(item_id):
             stats = cursor.fetchone()
 
             real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
+            
+            # 🌟 核心修复：去掉显示名称末尾的 (1)、(2) 等括号数字
+            display_name = re.sub(r'\(\d+\)$', '', item['name'])
+            
             return {
                 'id': item['id'],
-                'name': item['name'],
+                'name': display_name,  # 返回过滤后的名字
                 'unit': item['unit'],
                 'real_stock': real_stock,
                 'total_in': stats['total_in'],
@@ -182,7 +183,6 @@ def api_item(item_id):
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
-    """接收草料二维码推送的数据"""
     data = request.json
     logging.info(f"收到草料推送数据: {data}")
     if not data:
@@ -242,7 +242,6 @@ def webhook_grass():
 
 @app.route('/api/init_data')
 def init_data():
-    """一键导入，并自动处理重名物资"""
     import pandas as pd
     conn = get_db()
     try:
@@ -288,7 +287,6 @@ def init_data():
 
 @app.route('/api/export_links')
 def export_links():
-    """导出所有物资的名称和专属公网链接（用于批量替换草料）"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -296,9 +294,7 @@ def export_links():
             cursor.execute('SELECT name, id FROM items ORDER BY name')
             items = cursor.fetchall()
             
-            # 动态获取当前云托管的公网域名
             base_url = f"https://{request.host}/item/"
-            
             lines = ["物资名称,专属链接"]
             for item in items:
                 lines.append(f"{item['name']},{base_url}{item['id']}")
