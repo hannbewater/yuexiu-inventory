@@ -16,6 +16,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 def get_db():
+    """获取 MySQL 连接（不指定数据库，用于建库）"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -26,6 +27,7 @@ def get_db():
     return conn
 
 def init_db():
+    """初始化：建库、建表、建索引"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -63,12 +65,15 @@ def init_db():
         conn.close()
 
 def generate_item_id(name):
+    """根据物资名称生成唯一ID"""
     return hashlib.md5(name.encode()).hexdigest()[:8]
 
+# 启动时自动初始化
 init_db()
 
 # ================= 工具函数 =================
 def get_item_with_stock(item_id):
+    """获取单个物资的实时库存"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -177,6 +182,7 @@ def api_item(item_id):
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
+    """接收草料二维码推送的数据"""
     data = request.json
     logging.info(f"收到草料推送数据: {data}")
     if not data:
@@ -254,7 +260,6 @@ def init_data():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
                 
-                # 🌟 核心修复：处理重名物资，自动添加 (1)、(2) 后缀
                 original_name = name
                 suffix = 1
                 while name in imported_names:
@@ -280,6 +285,7 @@ def init_data():
         return f"导入失败: {str(e)}"
     finally:
         conn.close()
+
 @app.route('/api/export_links')
 def export_links():
     """导出所有物资的名称和专属公网链接（用于批量替换草料）"""
@@ -301,6 +307,7 @@ def export_links():
         return f"导出失败: {str(e)}"
     finally:
         conn.close()
-# ================= 启动 =================
+
+# ================= 启动应用 =================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
