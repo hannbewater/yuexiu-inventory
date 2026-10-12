@@ -1,11 +1,9 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
-from database import get_db, init_db
 import logging
-import os
-import hashlib
+import pymysql
+from database import get_db, init_db, generate_item_id
 
-# 配置日志（方便你实时看到草料推过来的数据）
+# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
@@ -14,34 +12,39 @@ init_db()
 # ================= 工具函数 =================
 
 def get_item_with_stock(item_id):
-    """获取单个物资的实时库存、累计入库和累计出库"""
+    """获取单个物资的实时库存、累计入库和累计出库 (MySQL 版本)"""
     conn = get_db()
-    item = conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone()
-    if not item:
+    try:
+        with conn.cursor() as cursor:
+            # 查询物资档案
+            cursor.execute('SELECT * FROM items WHERE id = %s', (item_id,))
+            item = cursor.fetchone()
+            if not item:
+                return None
+
+            # 查询所有流水并计算
+            cursor.execute('''
+                SELECT 
+                    COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
+                    COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS total_out
+                FROM transactions
+                WHERE item_id = %s
+            ''', (item_id,))
+            stats = cursor.fetchone()
+
+            real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
+
+            return {
+                'id': item['id'],
+                'name': item['name'],
+                'unit': item['unit'],
+                'real_stock': real_stock,
+                'total_in': stats['total_in'],
+                'total_out': stats['total_out'],
+                'low_stock_threshold': item['low_stock_threshold']
+            }
+    finally:
         conn.close()
-        return None
-
-    # 一次性查出该物资的所有入库和出库总数
-    stats = conn.execute('''
-        SELECT 
-            COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
-            COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS total_out
-        FROM transactions
-        WHERE item_id = ?
-    ''', (item_id,)).fetchone()
-
-    real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
-    conn.close()
-    
-    return {
-        'id': item['id'],
-        'name': item['name'],
-        'unit': item['unit'],
-        'real_stock': real_stock,
-        'total_in': stats['total_in'],
-        'total_out': stats['total_out'],
-        'low_stock_threshold': item['low_stock_threshold']
-    }
 
 # ================= 页面路由 =================
 
@@ -132,7 +135,7 @@ def api_item(item_id):
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
-    """接收草料二维码推送的出入库数据 API 接口（完美适配你的数据格式）"""
+    """接收草料二维码推送的出入库数据 API 接口 (MySQL 版本)"""
     data = request.json
     logging.info(f"收到草料推送数据: {data}")
     
@@ -145,7 +148,7 @@ def webhook_grass():
         form_name = ref_data.get('form', {}).get('name', '')
         fields = ref_data.get('fields', {})
         
-        # 2. 获取物资名称（优先从二维码数据取，如果取不到再取表单里的）
+        # 2. 获取物资名称
         ref_qrcode = data.get('data', {}).get('ref_qrcode', {})
         item_name = ref_qrcode.get('fields', {}).get('资产名称') or ref_qrcode.get('name')
         
@@ -163,33 +166,36 @@ def webhook_grass():
             return jsonify({'status': 'error', 'message': f'未知的表单类型: {form_name}'}), 400
             
         if not quantity:
-            return jsonify({'status': 'error', 'message': f'未在表单中找到数量，请检查表单字段名'}), 400
+            return jsonify({'status': 'error', 'message': '未在表单中找到数量'}), 400
 
-        # 4. 去数据库里根据名字找物资ID
         conn = get_db()
-        item = conn.execute('SELECT id FROM items WHERE name = ?', (item_name,)).fetchone()
-        
-        if not item:
-            # 如果数据库里没有这个名字，自动创建（防止未来新增物资不用重启）
-            logging.warning(f"数据库中不存在物资 [{item_name}]，尝试自动创建...")
-            item_id = hashlib.md5(item_name.encode()).hexdigest()[:8]
-            unit = fields.get('单选项', '个') # 获取计量单位
-            conn.execute('INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
-                         (item_id, item_name, unit, 0, 5)) # 默认初始库存0，预警阈值5
+        try:
+            with conn.cursor() as cursor:
+                # 4. 去数据库里找物资
+                cursor.execute('SELECT id FROM items WHERE name = %s', (item_name,))
+                item = cursor.fetchone()
+                
+                if not item:
+                    # 自动创建物资
+                    logging.warning(f"数据库中不存在物资 [{item_name}]，尝试自动创建...")
+                    item_id = generate_item_id(item_name)
+                    unit = fields.get('单选项', '个')
+                    cursor.execute('''
+                        INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold) 
+                        VALUES (%s, %s, %s, 0, 5)
+                    ''', (item_id, item_name, unit))
+                else:
+                    item_id = item['id']
+
+                # 5. 写入流水
+                cursor.execute('''
+                    INSERT INTO transactions (item_id, type, quantity, note) 
+                    VALUES (%s, %s, %s, %s)
+                ''', (item_id, trans_type, int(quantity), f'草料同步-{form_name}'))
+                
             conn.commit()
-        else:
-            item_id = item['id']
-            
-        conn.close()
-
-        # 5. 将流水写入数据库
-        conn = get_db()
-        conn.execute(
-            'INSERT INTO transactions (item_id, type, quantity, note) VALUES (?, ?, ?, ?)',
-            (item_id, trans_type, int(quantity), f'草料同步-{form_name}')
-        )
-        conn.commit()
-        conn.close()
+        finally:
+            conn.close()
 
         return jsonify({'status': 'success', 'message': f'{item_name} 数据已成功同步'}), 200
 
@@ -200,5 +206,5 @@ def webhook_grass():
 # ================= 启动应用 =================
 
 if __name__ == '__main__':
-    # host='0.0.0.0' 允许局域网和 ngrok 外部设备访问
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # 微信云托管要求监听 80 端口
+    app.run(host='0.0.0.0', port=80, debug=False)
