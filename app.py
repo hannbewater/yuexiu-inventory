@@ -4,6 +4,7 @@ import pymysql
 import os
 import hashlib
 import re
+from datetime import datetime, timedelta
 
 # ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,13 +48,22 @@ def init_db():
                     item_id VARCHAR(50) NOT NULL,
                     type VARCHAR(10) NOT NULL,
                     quantity INT NOT NULL,
+                    department VARCHAR(50) DEFAULT NULL,
                     note VARCHAR(255),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # 自动升级：如果 transactions 表里没有 department 字段，自动加上
+            try:
+                cursor.execute("ALTER TABLE transactions ADD COLUMN department VARCHAR(50) DEFAULT NULL")
+                logging.info("已自动添加 department 字段")
+            except Exception:
+                pass # 如果已经存在，忽略错误
+
             try:
                 cursor.execute('CREATE INDEX idx_item_id ON transactions(item_id)')
                 cursor.execute('CREATE INDEX idx_name ON items(name)')
+                cursor.execute('CREATE INDEX idx_department ON transactions(department)')
             except Exception:
                 pass
         conn.commit()
@@ -90,13 +100,11 @@ def get_item_with_stock(item_id):
             stats = cursor.fetchone()
 
             real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
-            
-            # 🌟 核心修复：去掉显示名称末尾的 (1)、(2) 等括号数字
             display_name = re.sub(r'\(\d+\)$', '', item['name'])
             
             return {
                 'id': item['id'],
-                'name': display_name,  # 返回过滤后的名字
+                'name': display_name,
                 'unit': item['unit'],
                 'real_stock': real_stock,
                 'total_in': stats['total_in'],
@@ -173,6 +181,154 @@ def item_page(item_id):
     '''
     return html
 
+@app.route('/dashboard')
+def dashboard():
+    """全局数据面板：常用物资预警 + 部门领用统计"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            
+            # 1. 获取所有物资及其实时库存
+            cursor.execute('SELECT * FROM items')
+            items = cursor.fetchall()
+            
+            # 2. 计算实时库存并筛选出预警物资（低于阈值）
+            low_stock_items = []
+            all_items_with_stock = []
+            for item in items:
+                cursor.execute('''
+                    SELECT 
+                        COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
+                        COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS total_out
+                    FROM transactions WHERE item_id = %s
+                ''', (item['id'],))
+                stats = cursor.fetchone()
+                real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
+                display_name = re.sub(r'\(\d+\)$', '', item['name'])
+                
+                item_data = {
+                    'id': item['id'],
+                    'name': display_name,
+                    'unit': item['unit'],
+                    'real_stock': real_stock,
+                    'threshold': item['low_stock_threshold']
+                }
+                all_items_with_stock.append(item_data)
+                
+                if real_stock <= item['low_stock_threshold']:
+                    low_stock_items.append(item_data)
+            
+            # 按实时库存升序排列，最紧急的排在最前面
+            low_stock_items.sort(key=lambda x: x['real_stock'])
+            
+            # 3. 统计各部门最近30天的领用情况
+            thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute('''
+                SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
+                FROM transactions t
+                JOIN items i ON t.item_id = i.id
+                WHERE t.type = 'out' AND t.department IS NOT NULL AND t.created_at >= %s
+                GROUP BY t.department, i.name, i.unit
+                ORDER BY t.department, total_out_qty DESC
+            ''', (thirty_days_ago,))
+            dept_usage = cursor.fetchall()
+            
+            # 整理部门数据
+            dept_dict = {}
+            for row in dept_usage:
+                dept = row['department']
+                if dept not in dept_dict:
+                    dept_dict[dept] = []
+                dept_dict[dept].append({
+                    'name': re.sub(r'\(\d+\)$', '', row['name']),
+                    'unit': row['unit'],
+                    'qty': row['total_out_qty']
+                })
+
+    finally:
+        conn.close()
+
+    # 构造看板HTML
+    low_stock_html = "".join([f'''
+        <div style="background: #fff5f5; border-left: 4px solid #e74c3c; padding: 12px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <span style="font-weight: 600; color: #333;">{item['name']}</span>
+                <span style="color: #888; font-size: 12px; margin-left: 8px;">预警值: {item['threshold']}</span>
+            </div>
+            <div style="color: #e74c3c; font-weight: 700; font-size: 18px;">{item['real_stock']} {item['unit']}</div>
+        </div>
+    ''' for item in low_stock_items])
+
+    dept_html = ""
+    for dept, usages in dept_dict.items():
+        usage_rows = "".join([f'''
+            <tr>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">{u['name']}</td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee; text-align: right; font-weight: 600; color: #e74c3c;">{u['qty']} {u['unit']}</td>
+            </tr>
+        ''' for u in usages])
+        dept_html += f'''
+        <div style="background: white; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+            <div style="font-weight: 700; font-size: 16px; margin-bottom: 12px; color: #333;">📁 {dept}</div>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <thead>
+                    <tr style="color: #888; text-align: left;">
+                        <th style="padding-bottom: 8px;">物资名称</th>
+                        <th style="text-align: right; padding-bottom: 8px;">近30天领用</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {usage_rows}
+                </tbody>
+            </table>
+        </div>
+        '''
+
+    if not dept_html:
+        dept_html = "<div style='color: #888; text-align: center; padding: 20px;'>暂无部门领用记录（请确保草料表单中有“所属部门”字段且已填写）</div>"
+
+    html = f'''
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>环球梦大厦 · 物资预警看板</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }}
+            .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; background: white; padding: 12px 16px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }}
+            .logo {{ height: 32px; object-fit: contain; }}
+            .project-title {{ font-size: 14px; font-weight: 600; color: #333; white-space: nowrap; flex: 1; text-align: right; margin-left: 10px; }}
+            .section-title {{ font-size: 18px; font-weight: 700; color: #333; margin: 20px 0 12px 0; display: flex; align-items: center; }}
+            .section-title span {{ background: #e74c3c; color: white; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 10px; font-weight: normal; }}
+            .footer {{ text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; padding-bottom: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <img src="/static/logo.png" class="logo" alt="越秀服务" onerror="this.style.display='none'">
+            <div class="project-title">环球梦大厦 · 物资预警看板</div>
+        </div>
+
+        <!-- 库存预警区 -->
+        <div class="section-title">🚨 库存预警 <span>{len(low_stock_items)} 项</span></div>
+        <div style="background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+            {low_stock_html if low_stock_html else '<div style="text-align:center; color:#2ecc71; padding: 20px;">✅ 所有物资库存充足</div>'}
+        </div>
+
+        <!-- 部门领用统计区 -->
+        <div class="section-title" style="margin-top: 30px;">📊 各部门近30天领用统计</div>
+        <div>
+            {dept_html}
+        </div>
+
+        <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
+    </body>
+    </html>
+    '''
+    return html
+
 # ================= API 接口 =================
 @app.route('/api/item/<item_id>')
 def api_item(item_id):
@@ -197,6 +353,9 @@ def webhook_grass():
         
         if not item_name:
             return jsonify({'status': 'error', 'message': '未找到物资名称'}), 400
+
+        # 提取领用部门（兼容不同的字段名）
+        department = fields.get('所属部门') or fields.get('领用部门') or fields.get('部门')
 
         if '出库' in form_name:
             trans_type = 'out'
@@ -229,9 +388,9 @@ def webhook_grass():
                     item_id = item['id']
 
                 cursor.execute('''
-                    INSERT INTO transactions (item_id, type, quantity, note) 
-                    VALUES (%s, %s, %s, %s)
-                ''', (item_id, trans_type, int(quantity), f'草料同步-{form_name}'))
+                    INSERT INTO transactions (item_id, type, quantity, department, note) 
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (item_id, trans_type, int(quantity), department, f'草料同步-{form_name}'))
             conn.commit()
         finally:
             conn.close()
@@ -293,7 +452,6 @@ def export_links():
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT name, id FROM items ORDER BY name')
             items = cursor.fetchall()
-            
             base_url = f"https://{request.host}/item/"
             lines = ["物资名称,专属链接"]
             for item in items:
