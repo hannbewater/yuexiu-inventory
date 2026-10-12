@@ -16,7 +16,6 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 def get_db():
-    """获取 MySQL 连接（不指定数据库，用于建库）"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -27,7 +26,6 @@ def get_db():
     return conn
 
 def init_db():
-    """初始化：建库、建表、建索引"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -52,7 +50,6 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # 创建索引，加速查询（如果已存在会报错，忽略即可）
             try:
                 cursor.execute('CREATE INDEX idx_item_id ON transactions(item_id)')
                 cursor.execute('CREATE INDEX idx_name ON items(name)')
@@ -66,15 +63,12 @@ def init_db():
         conn.close()
 
 def generate_item_id(name):
-    """根据物资名称生成唯一ID"""
     return hashlib.md5(name.encode()).hexdigest()[:8]
 
-# 启动时自动初始化
 init_db()
 
 # ================= 工具函数 =================
 def get_item_with_stock(item_id):
-    """获取单个物资的实时库存"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -183,7 +177,6 @@ def api_item(item_id):
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
-    """接收草料二维码推送的数据"""
     data = request.json
     logging.info(f"收到草料推送数据: {data}")
     if not data:
@@ -243,7 +236,7 @@ def webhook_grass():
 
 @app.route('/api/init_data')
 def init_data():
-    """一键将 full_items.xlsx 的物资导入云端数据库"""
+    """一键导入，并自动处理重名物资"""
     import pandas as pd
     conn = get_db()
     try:
@@ -253,13 +246,21 @@ def init_data():
             cursor.execute('DELETE FROM transactions')
             
             df = pd.read_excel('full_items.xlsx', sheet_name='物资编码')
-            # 清洗列名，去掉换行符和空格，解决 '计量单位' 找不到的问题
             df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
             
+            imported_names = set()
             count = 0
             for index, row in df.iterrows():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
+                
+                # 🌟 核心修复：处理重名物资，自动添加 (1)、(2) 后缀
+                original_name = name
+                suffix = 1
+                while name in imported_names:
+                    name = f"{original_name}({suffix})"
+                    suffix += 1
+                imported_names.add(name)
                 
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
@@ -274,12 +275,12 @@ def init_data():
                 ''', (item_id, name, unit, initial_stock))
                 count += 1
         conn.commit()
-        return f"🎉 成功导入 {count} 种物资！"
+        return f"🎉 成功导入 {count} 种物资！（重名物资已自动加序号区分）"
     except Exception as e:
         return f"导入失败: {str(e)}"
     finally:
         conn.close()
 
-# ================= 启动应用 =================
+# ================= 启动 =================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
