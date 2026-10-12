@@ -280,7 +280,27 @@ def init_data():
         return f"导入失败: {str(e)}"
     finally:
         conn.close()
-
+@app.route('/api/export_links')
+def export_links():
+    """导出所有物资的名称和专属公网链接（用于批量替换草料）"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('SELECT name, id FROM items ORDER BY name')
+            items = cursor.fetchall()
+            
+            # 动态获取当前云托管的公网域名
+            base_url = f"https://{request.host}/item/"
+            
+            lines = ["物资名称,专属链接"]
+            for item in items:
+                lines.append(f"{item['name']},{base_url}{item['id']}")
+            return "\n".join(lines)
+    except Exception as e:
+        return f"导出失败: {str(e)}"
+    finally:
+        conn.close()
 # ================= 启动 =================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
