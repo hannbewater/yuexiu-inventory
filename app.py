@@ -20,7 +20,7 @@ MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 # 🌟 部门 -> 企业微信群机器人 Webhook 地址（按需替换）
 DEPT_WEBHOOKS = {
-    '综合部': '',  # 填入综合部群机器人 Webhook
+    '综合部': '',
     '工程部': '',
     '秩序部': '',
     '客服部': '',
@@ -64,17 +64,14 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # 自动升级：加 department 字段
             for sql in [
                 "ALTER TABLE items ADD COLUMN department VARCHAR(50) DEFAULT NULL",
                 "ALTER TABLE transactions ADD COLUMN department VARCHAR(50) DEFAULT NULL"
             ]:
                 try:
                     cursor.execute(sql)
-                    logging.info(f"已执行: {sql}")
                 except Exception:
                     pass
-            # 索引
             for sql in [
                 'CREATE INDEX idx_item_id ON transactions(item_id)',
                 'CREATE INDEX idx_name ON items(name)',
@@ -98,7 +95,6 @@ init_db()
 
 # ================= 工具函数 =================
 def calc_stock(cursor, item):
-    """计算单个物资的实时库存"""
     cursor.execute('''
         SELECT 
             COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
@@ -124,10 +120,7 @@ def send_dept_alert(department, message):
     if not webhook:
         return False
     try:
-        resp = requests.post(webhook, json={
-            "msgtype": "text",
-            "text": {"content": message}
-        }, timeout=5)
+        resp = requests.post(webhook, json={"msgtype": "text", "text": {"content": message}}, timeout=5)
         return resp.status_code == 200
     except Exception as e:
         logging.error(f"发送预警失败: {e}")
@@ -241,14 +234,12 @@ def item_page(item_id):
 
 @app.route('/dashboard')
 def dashboard_global():
-    """全局看板：所有物资预警 + 部门领用统计"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT * FROM items')
             items = cursor.fetchall()
-            
             all_low = []
             for item in items:
                 data = calc_stock(cursor, item)
@@ -256,7 +247,6 @@ def dashboard_global():
                     all_low.append(data)
             all_low.sort(key=lambda x: x['real_stock'])
             
-            # 部门领用统计
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute('''
                 SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
@@ -267,7 +257,6 @@ def dashboard_global():
                 ORDER BY t.department, total_out_qty DESC
             ''', (thirty_days_ago,))
             dept_usage = cursor.fetchall()
-            
             dept_dict = {}
             for row in dept_usage:
                 dept = row['department']
@@ -279,7 +268,6 @@ def dashboard_global():
     finally:
         conn.close()
 
-    # 部门跳转按钮
     quick_links = '<div class="quick-links">'
     for dept in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
         quick_links += f'<a href="/dashboard/{dept}">{dept}</a>'
@@ -322,15 +310,12 @@ def dashboard_global():
 
 @app.route('/dashboard/<department>')
 def dashboard_dept(department):
-    """部门专属看板：本部门预警 + 全部物资预警 + 本部门领用记录"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT * FROM items')
             items = cursor.fetchall()
-            
-            # 分类：本部门物资预警 / 全部物资预警
             my_low = []
             all_low = []
             for item in items:
@@ -342,7 +327,6 @@ def dashboard_dept(department):
             my_low.sort(key=lambda x: x['real_stock'])
             all_low.sort(key=lambda x: x['real_stock'])
             
-            # 本部门近30天领用
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute('''
                 SELECT i.name, i.unit, SUM(t.quantity) as total_qty
@@ -356,7 +340,6 @@ def dashboard_dept(department):
     finally:
         conn.close()
 
-    # 部门快捷切换
     quick_links = '<div class="quick-links">'
     for d in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
         style = 'background:#333;color:white;' if d == department else ''
@@ -379,19 +362,15 @@ def dashboard_dept(department):
     <body>
         {render_header(f"{department} · 物资预警看板")}
         {quick_links}
-
         <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div>
         <div class="card">{render_low_stock_html(my_low)}</div>
-
         <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div>
         <div class="card">{render_low_stock_html(all_low)}</div>
-
         <div class="section-title" style="margin-top:24px;">📊 {department}近30天领用记录</div>
         <div class="card">
             <table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead>
             <tbody>{usage_rows}</tbody></table>
         </div>
-
         <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
     </body>
     </html>
@@ -485,7 +464,10 @@ def init_data():
             cursor.execute('DELETE FROM items')
             cursor.execute('DELETE FROM transactions')
             
+            # 使用你提供的真实文件，读取“物资编码”表
             df = pd.read_excel('full_items.xlsx', sheet_name='物资编码')
+            
+            # 清洗列名
             df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
             
             imported_names = set()
@@ -494,12 +476,18 @@ def init_data():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
                 
+                # 处理重名
                 original_name = name
                 suffix = 1
                 while name in imported_names:
                     name = f"{original_name}({suffix})"
                     suffix += 1
                 imported_names.add(name)
+                
+                # 🌟 核心：从 C 列“申采部门”获取归属部门
+                dept = str(row['申采部门']).replace('<br>', '').replace('\n', '').strip() if pd.notna(row['申采部门']) else '综合部'
+                if dept == 'nan' or not dept:
+                    dept = '综合部' # 默认归属综合部
                 
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
@@ -509,48 +497,14 @@ def init_data():
                 
                 item_id = generate_item_id(name)
                 cursor.execute('''
-                    INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold)
-                    VALUES (%s, %s, %s, %s, 5)
-                ''', (item_id, name, unit, initial_stock))
+                    INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold, department)
+                    VALUES (%s, %s, %s, %s, 5, %s)
+                ''', (item_id, name, unit, initial_stock, dept))
                 count += 1
         conn.commit()
-        return f"🎉 成功导入 {count} 种物资！"
+        return f"🎉 成功导入 {count} 种物资！已根据“申采部门”自动分配归属部门。"
     except Exception as e:
         return f"导入失败: {str(e)}"
-    finally:
-        conn.close()
-
-@app.route('/api/set_department')
-def set_department():
-    """
-    批量给物资设置所属部门。
-    用法示例：/api/set_department?items=信封:综合部,A4打印纸:综合部,消防中心:秩序部
-    """
-    params = request.args.get('items', '')
-    if not params:
-        return "请传入参数，格式：/api/set_department?items=物资名:部门,物资名:部门"
-    
-    conn = get_db()
-    try:
-        pairs = params.split(',')
-        updated = 0
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            for pair in pairs:
-                if ':' not in pair:
-                    continue
-                name, dept = pair.split(':', 1)
-                name = name.strip()
-                dept = dept.strip()
-                cursor.execute('''
-                    UPDATE items SET department = %s 
-                    WHERE name = %s OR name LIKE %s
-                ''', (dept, name, f"{name}(%"))
-                updated += cursor.rowcount
-        conn.commit()
-        return f"✅ 已更新 {updated} 条物资的部门归属！"
-    except Exception as e:
-        return f"设置失败: {str(e)}"
     finally:
         conn.close()
 
@@ -574,7 +528,6 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
-    """检查各部门库存，给低于阈值的部门经理推企业微信消息"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -604,6 +557,5 @@ def check_alerts():
     finally:
         conn.close()
 
-# ================= 启动应用 =================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
