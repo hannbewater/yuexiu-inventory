@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
-# ================= 数据库连接与初始化 =================
+# ================= 数据库配置 =================
 MYSQL_ADDRESS = os.environ.get("MYSQL_ADDRESS")
 MYSQL_USERNAME = os.environ.get("MYSQL_USERNAME")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
@@ -27,15 +27,12 @@ def get_db():
     return conn
 
 def init_db():
-    """初始化：先建库，再建表，最后建索引"""
+    """初始化：建库、建表、建索引"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
-            # 1. 创建数据库
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            
-            # 2. 创建物资表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS items (
                     id VARCHAR(50) PRIMARY KEY,
@@ -45,7 +42,6 @@ def init_db():
                     low_stock_threshold INT DEFAULT 5
                 )
             ''')
-            # 3. 创建流水表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,9 +52,12 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # 4. 添加索引，加速查询
-            cursor.execute('CREATE INDEX idx_item_id ON transactions(item_id)')
-            cursor.execute('CREATE INDEX idx_name ON items(name)')
+            # 创建索引，加速查询（如果已存在会报错，忽略即可）
+            try:
+                cursor.execute('CREATE INDEX idx_item_id ON transactions(item_id)')
+                cursor.execute('CREATE INDEX idx_name ON items(name)')
+            except Exception:
+                pass
         conn.commit()
         logging.info("数据库初始化完成")
     except Exception as e:
@@ -70,12 +69,12 @@ def generate_item_id(name):
     """根据物资名称生成唯一ID"""
     return hashlib.md5(name.encode()).hexdigest()[:8]
 
-# 初始化数据库（Flask 启动时会自动执行）
+# 启动时自动初始化
 init_db()
 
 # ================= 工具函数 =================
 def get_item_with_stock(item_id):
-    """获取单个物资的实时库存、累计入库和累计出库"""
+    """获取单个物资的实时库存"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -95,7 +94,6 @@ def get_item_with_stock(item_id):
             stats = cursor.fetchone()
 
             real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
-
             return {
                 'id': item['id'],
                 'name': item['name'],
@@ -109,9 +107,12 @@ def get_item_with_stock(item_id):
         conn.close()
 
 # ================= 页面路由 =================
+@app.route('/')
+def home():
+    return "🎉 环球梦大厦库存看板系统运行中！请扫码访问。"
+
 @app.route('/item/<item_id>')
 def item_page(item_id):
-    """扫码后展示的物资数据看板"""
     item = get_item_with_stock(item_id)
     if not item:
         return "<h2 style='text-align:center;margin-top:50px;'>物资不存在</h2>", 404
@@ -242,21 +243,24 @@ def webhook_grass():
 
 @app.route('/api/init_data')
 def init_data():
-    """一键将 full_items.xlsx 的物资导入云端数据库（仅在数据库为空时执行）"""
+    """一键将 full_items.xlsx 的物资导入云端数据库"""
     import pandas as pd
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT COUNT(*) AS count FROM items')
-            if cursor.fetchone()['count'] > 0:
-                return "数据库已有数据，跳过导入，防止重复。"
+            cursor.execute('DELETE FROM items')
+            cursor.execute('DELETE FROM transactions')
             
             df = pd.read_excel('full_items.xlsx', sheet_name='物资编码')
+            # 清洗列名，去掉换行符和空格，解决 '计量单位' 找不到的问题
+            df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
+            
             count = 0
             for index, row in df.iterrows():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
+                
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
                     initial_stock = int(float(row['数量'])) if pd.notna(row['数量']) else 0
