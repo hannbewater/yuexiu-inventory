@@ -18,10 +18,11 @@ MYSQL_USERNAME = os.environ.get("MYSQL_USERNAME")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
-# 🌟 部门 -> 企业微信群机器人 Webhook 地址（按需替换）
+# ================= 钉钉机器人 Webhook 配置 =================
+# 键名必须与数据库 items.department 的值完全一致
 DEPT_WEBHOOKS = {
-    '综合部': '',
-    '工程部': '',
+    '综合部': 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1',
+    '工程部': '',   # 等其他部门机器人创建后填入
     '秩序部': '',
     '客服部': '',
     '安管部': '',
@@ -64,6 +65,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # 自动升级：加 department 字段
             for sql in [
                 "ALTER TABLE items ADD COLUMN department VARCHAR(50) DEFAULT NULL",
                 "ALTER TABLE transactions ADD COLUMN department VARCHAR(50) DEFAULT NULL"
@@ -72,6 +74,7 @@ def init_db():
                     cursor.execute(sql)
                 except Exception:
                     pass
+            # 索引
             for sql in [
                 'CREATE INDEX idx_item_id ON transactions(item_id)',
                 'CREATE INDEX idx_name ON items(name)',
@@ -95,6 +98,7 @@ init_db()
 
 # ================= 工具函数 =================
 def calc_stock(cursor, item):
+    """计算物资实时库存"""
     cursor.execute('''
         SELECT 
             COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
@@ -116,16 +120,33 @@ def calc_stock(cursor, item):
     }
 
 def send_dept_alert(department, message):
+    """向指定部门的钉钉群发送预警消息"""
     webhook = DEPT_WEBHOOKS.get(department)
     if not webhook:
+        logging.warning(f"未配置部门 [{department}] 的钉钉 Webhook 地址，跳过推送")
         return False
+    
+    data = {
+        "msgtype": "text",
+        "text": {
+            "content": f"【库存预警】{message}"
+        }
+    }
+    headers = {'Content-Type': 'application/json;charset=utf-8'}
+    
     try:
-        resp = requests.post(webhook, json={"msgtype": "text", "text": {"content": message}}, timeout=5)
-        return resp.status_code == 200
+        resp = requests.post(webhook, json=data, headers=headers, timeout=5)
+        if resp.status_code == 200 and resp.json().get('errcode') == 0:
+            logging.info(f"成功向 [{department}] 的钉钉群发送预警")
+            return True
+        else:
+            logging.error(f"发送钉钉消息失败: {resp.text}")
+            return False
     except Exception as e:
-        logging.error(f"发送预警失败: {e}")
+        logging.error(f"发送钉钉消息异常: {e}")
         return False
 
+# ================= 页面渲染基础 =================
 def render_header(title):
     return f'''
     <div class="header">
@@ -155,6 +176,7 @@ BASE_STYLE = '''
     .footer { text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; padding-bottom: 20px; }
     .quick-links { text-align: center; margin: 15px 0; }
     .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+    .quick-links a.active { background: #333; color: white; }
 '''
 
 def render_low_stock_html(items):
@@ -233,148 +255,132 @@ def item_page(item_id):
     return html
 
 @app.route('/dashboard')
-def dashboard_global():
+def dashboard():
+    """全局看板 或 部门看板，通过 ?dept=部门名 区分"""
+    dept = request.args.get('dept', '').strip()
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT * FROM items')
             items = cursor.fetchall()
-            all_low = []
-            for item in items:
-                data = calc_stock(cursor, item)
-                if data['is_low']:
-                    all_low.append(data)
+            
+            all_items_data = [calc_stock(cursor, item) for item in items]
+            all_low = [d for d in all_items_data if d['is_low']]
             all_low.sort(key=lambda x: x['real_stock'])
             
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute('''
-                SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
-                FROM transactions t
-                JOIN items i ON t.item_id = i.id
-                WHERE t.type = 'out' AND t.department IS NOT NULL AND t.created_at >= %s
-                GROUP BY t.department, i.name, i.unit
-                ORDER BY t.department, total_out_qty DESC
-            ''', (thirty_days_ago,))
-            dept_usage = cursor.fetchall()
-            dept_dict = {}
-            for row in dept_usage:
-                dept = row['department']
-                dept_dict.setdefault(dept, []).append({
-                    'name': re.sub(r'\(\d+\)$', '', row['name']),
-                    'unit': row['unit'],
-                    'qty': row['total_out_qty']
-                })
-    finally:
-        conn.close()
-
-    quick_links = '<div class="quick-links">'
-    for dept in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
-        quick_links += f'<a href="/dashboard/{dept}">{dept}</a>'
-    quick_links += '</div>'
-
-    dept_html = ''
-    for dept, usages in dept_dict.items():
-        rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["qty"]} {u["unit"]}</td></tr>' for u in usages])
-        dept_html += f'''
-        <div class="card" style="margin-bottom: 12px;">
-            <div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {dept}</div>
-            <table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead>
-            <tbody>{rows}</tbody></table>
-        </div>
-        '''
-    if not dept_html:
-        dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
-
-    html = f'''
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>环球梦大厦 · 物资预警看板</title>
-        <style>{BASE_STYLE}</style>
-    </head>
-    <body>
-        {render_header("环球梦大厦 · 物资预警看板")}
-        {quick_links}
-        <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div>
-        <div class="card">{render_low_stock_html(all_low)}</div>
-        <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>
-        {dept_html}
-        <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
-    </body>
-    </html>
-    '''
-    return html
-
-@app.route('/dashboard/<department>')
-def dashboard_dept(department):
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT * FROM items')
-            items = cursor.fetchall()
-            my_low = []
-            all_low = []
-            for item in items:
-                data = calc_stock(cursor, item)
-                if data['is_low']:
-                    all_low.append(data)
-                    if data['department'] == department:
-                        my_low.append(data)
-            my_low.sort(key=lambda x: x['real_stock'])
-            all_low.sort(key=lambda x: x['real_stock'])
             
-            thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute('''
-                SELECT i.name, i.unit, SUM(t.quantity) as total_qty
-                FROM transactions t
-                JOIN items i ON t.item_id = i.id
-                WHERE t.type = 'out' AND t.department = %s AND t.created_at >= %s
-                GROUP BY i.name, i.unit
-                ORDER BY total_qty DESC
-            ''', (department, thirty_days_ago))
-            usages = cursor.fetchall()
+            if dept:
+                # 部门看板
+                my_low = [d for d in all_low if d['department'] == dept]
+                cursor.execute('''
+                    SELECT i.name, i.unit, SUM(t.quantity) as total_qty
+                    FROM transactions t
+                    JOIN items i ON t.item_id = i.id
+                    WHERE t.type = 'out' AND t.department = %s AND t.created_at >= %s
+                    GROUP BY i.name, i.unit
+                    ORDER BY total_qty DESC
+                ''', (dept, thirty_days_ago))
+                usages = cursor.fetchall()
+                dept_dict = None
+            else:
+                # 全局看板，按部门统计领用
+                cursor.execute('''
+                    SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
+                    FROM transactions t
+                    JOIN items i ON t.item_id = i.id
+                    WHERE t.type = 'out' AND t.department IS NOT NULL AND t.created_at >= %s
+                    GROUP BY t.department, i.name, i.unit
+                    ORDER BY t.department, total_out_qty DESC
+                ''', (thirty_days_ago,))
+                dept_usage = cursor.fetchall()
+                dept_dict = {}
+                for row in dept_usage:
+                    d = row['department']
+                    dept_dict.setdefault(d, []).append({
+                        'name': re.sub(r'\(\d+\)$', '', row['name']),
+                        'unit': row['unit'],
+                        'qty': row['total_out_qty']
+                    })
     finally:
         conn.close()
 
+    # 快捷链接
     quick_links = '<div class="quick-links">'
     for d in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
-        style = 'background:#333;color:white;' if d == department else ''
-        quick_links += f'<a href="/dashboard/{d}" style="{style}">{d}</a>'
-    quick_links += '<a href="/dashboard">🌐 全局看板</a></div>'
+        active = 'active' if d == dept else ''
+        quick_links += f'<a href="/dashboard?dept={d}" class="{active}">{d}</a>'
+    active_global = 'active' if not dept else ''
+    quick_links += f'<a href="/dashboard" class="{active_global}">🌐 全局看板</a></div>'
 
-    usage_rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["total_qty"]} {u["unit"]}</td></tr>' for u in usages])
-    if not usage_rows:
-        usage_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无领用记录</td></tr>'
+    if dept:
+        # 部门看板 HTML
+        usage_rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["total_qty"]} {u["unit"]}</td></tr>' for u in usages])
+        if not usage_rows:
+            usage_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无领用记录</td></tr>'
+        
+        html = f'''
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>{dept} · 物资看板</title>
+            <style>{BASE_STYLE}</style>
+        </head>
+        <body>
+            {render_header(f"{dept} · 物资预警看板")}
+            {quick_links}
+            <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div>
+            <div class="card">{render_low_stock_html(my_low)}</div>
+            <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div>
+            <div class="card">{render_low_stock_html(all_low)}</div>
+            <div class="section-title" style="margin-top:24px;">📊 {dept}近30天领用记录</div>
+            <div class="card">
+                <table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead>
+                <tbody>{usage_rows}</tbody></table>
+            </div>
+            <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
+        </body>
+        </html>
+        '''
+    else:
+        # 全局看板 HTML
+        dept_html = ''
+        if dept_dict:
+            for d, usages in dept_dict.items():
+                rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["qty"]} {u["unit"]}</td></tr>' for u in usages])
+                dept_html += f'''
+                <div class="card" style="margin-bottom: 12px;">
+                    <div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}</div>
+                    <table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead>
+                    <tbody>{rows}</tbody></table>
+                </div>
+                '''
+        if not dept_html:
+            dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
 
-    html = f'''
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>{department} · 物资看板</title>
-        <style>{BASE_STYLE}</style>
-    </head>
-    <body>
-        {render_header(f"{department} · 物资预警看板")}
-        {quick_links}
-        <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div>
-        <div class="card">{render_low_stock_html(my_low)}</div>
-        <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div>
-        <div class="card">{render_low_stock_html(all_low)}</div>
-        <div class="section-title" style="margin-top:24px;">📊 {department}近30天领用记录</div>
-        <div class="card">
-            <table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead>
-            <tbody>{usage_rows}</tbody></table>
-        </div>
-        <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
-    </body>
-    </html>
-    '''
+        html = f'''
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>环球梦大厦 · 物资预警看板</title>
+            <style>{BASE_STYLE}</style>
+        </head>
+        <body>
+            {render_header("环球梦大厦 · 物资预警看板")}
+            {quick_links}
+            <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div>
+            <div class="card">{render_low_stock_html(all_low)}</div>
+            <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>
+            {dept_html}
+            <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
+        </body>
+        </html>
+        '''
     return html
 
 # ================= API 接口 =================
@@ -464,10 +470,7 @@ def init_data():
             cursor.execute('DELETE FROM items')
             cursor.execute('DELETE FROM transactions')
             
-            # 使用你提供的真实文件，读取“物资编码”表
             df = pd.read_excel('full_items.xlsx', sheet_name='物资编码')
-            
-            # 清洗列名
             df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
             
             imported_names = set()
@@ -476,7 +479,6 @@ def init_data():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
                 
-                # 处理重名
                 original_name = name
                 suffix = 1
                 while name in imported_names:
@@ -484,10 +486,10 @@ def init_data():
                     suffix += 1
                 imported_names.add(name)
                 
-                # 🌟 核心：从 C 列“申采部门”获取归属部门
+                # 从“申采部门”获取归属部门
                 dept = str(row['申采部门']).replace('<br>', '').replace('\n', '').strip() if pd.notna(row['申采部门']) else '综合部'
                 if dept == 'nan' or not dept:
-                    dept = '综合部' # 默认归属综合部
+                    dept = '综合部'
                 
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
@@ -528,6 +530,7 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
+    """检查各部门库存，向低于阈值的部门钉钉群发送预警"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
