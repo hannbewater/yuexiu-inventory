@@ -7,9 +7,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 
-# ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 app = Flask(__name__)
 
 # ================= 数据库配置 =================
@@ -18,24 +16,27 @@ MYSQL_USERNAME = os.environ.get("MYSQL_USERNAME")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
-# ================= 钉钉机器人 Webhook 配置 =================
-# 键名必须与数据库 items.department 的值完全一致
+# ================= 钉钉机器人 =================
 DEPT_WEBHOOKS = {
     '综合部': 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1',
-    '工程部': '',   # 等其他部门机器人创建后填入
+    '工程部': '',
     '秩序部': '',
     '客服部': '',
     '安管部': '',
 }
 
 def get_db():
+    """获取数据库连接，带自动重连保护"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
         user=MYSQL_USERNAME,
         password=MYSQL_PASSWORD,
-        cursorclass=pymysql.cursors.DictCursor
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True
     )
+    # 关键：检查连接是否有效，无效则自动重连
+    conn.ping(reconnect=True)
     return conn
 
 def init_db():
@@ -65,26 +66,19 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # 自动升级：加 department 字段
             for sql in [
                 "ALTER TABLE items ADD COLUMN department VARCHAR(50) DEFAULT NULL",
                 "ALTER TABLE transactions ADD COLUMN department VARCHAR(50) DEFAULT NULL"
             ]:
-                try:
-                    cursor.execute(sql)
-                except Exception:
-                    pass
-            # 索引
+                try: cursor.execute(sql)
+                except Exception: pass
             for sql in [
                 'CREATE INDEX idx_item_id ON transactions(item_id)',
                 'CREATE INDEX idx_name ON items(name)',
                 'CREATE INDEX idx_department ON transactions(department)'
             ]:
-                try:
-                    cursor.execute(sql)
-                except Exception:
-                    pass
-        conn.commit()
+                try: cursor.execute(sql)
+                except Exception: pass
         logging.info("数据库初始化完成")
     except Exception as e:
         logging.error(f"数据库初始化失败: {e}")
@@ -98,7 +92,6 @@ init_db()
 
 # ================= 工具函数 =================
 def calc_stock(cursor, item):
-    """计算物资实时库存"""
     cursor.execute('''
         SELECT 
             COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
@@ -120,33 +113,24 @@ def calc_stock(cursor, item):
     }
 
 def send_dept_alert(department, message):
-    """向指定部门的钉钉群发送预警消息"""
     webhook = DEPT_WEBHOOKS.get(department)
     if not webhook:
-        logging.warning(f"未配置部门 [{department}] 的钉钉 Webhook 地址，跳过推送")
+        logging.warning(f"未配置部门 [{department}] 的钉钉 Webhook，跳过推送")
         return False
-    
-    data = {
-        "msgtype": "text",
-        "text": {
-            "content": f"【库存预警】{message}"
-        }
-    }
+    data = {"msgtype": "text", "text": {"content": f"【库存预警】{message}"}}
     headers = {'Content-Type': 'application/json;charset=utf-8'}
-    
     try:
         resp = requests.post(webhook, json=data, headers=headers, timeout=5)
         if resp.status_code == 200 and resp.json().get('errcode') == 0:
-            logging.info(f"成功向 [{department}] 的钉钉群发送预警")
+            logging.info(f"成功向 [{department}] 钉钉群推送预警")
             return True
         else:
-            logging.error(f"发送钉钉消息失败: {resp.text}")
+            logging.error(f"钉钉推送失败: {resp.text}")
             return False
     except Exception as e:
-        logging.error(f"发送钉钉消息异常: {e}")
+        logging.error(f"钉钉推送异常: {e}")
         return False
 
-# ================= 页面渲染基础 =================
 def render_header(title):
     return f'''
     <div class="header">
@@ -256,7 +240,6 @@ def item_page(item_id):
 
 @app.route('/dashboard')
 def dashboard():
-    """全局看板 或 部门看板，通过 ?dept=部门名 区分"""
     dept = request.args.get('dept', '').strip()
     conn = get_db()
     try:
@@ -264,7 +247,6 @@ def dashboard():
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT * FROM items')
             items = cursor.fetchall()
-            
             all_items_data = [calc_stock(cursor, item) for item in items]
             all_low = [d for d in all_items_data if d['is_low']]
             all_low.sort(key=lambda x: x['real_stock'])
@@ -272,7 +254,6 @@ def dashboard():
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
             
             if dept:
-                # 部门看板
                 my_low = [d for d in all_low if d['department'] == dept]
                 cursor.execute('''
                     SELECT i.name, i.unit, SUM(t.quantity) as total_qty
@@ -285,7 +266,6 @@ def dashboard():
                 usages = cursor.fetchall()
                 dept_dict = None
             else:
-                # 全局看板，按部门统计领用
                 cursor.execute('''
                     SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
                     FROM transactions t
@@ -306,7 +286,6 @@ def dashboard():
     finally:
         conn.close()
 
-    # 快捷链接
     quick_links = '<div class="quick-links">'
     for d in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
         active = 'active' if d == dept else ''
@@ -315,11 +294,9 @@ def dashboard():
     quick_links += f'<a href="/dashboard" class="{active_global}">🌐 全局看板</a></div>'
 
     if dept:
-        # 部门看板 HTML
         usage_rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["total_qty"]} {u["unit"]}</td></tr>' for u in usages])
         if not usage_rows:
             usage_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无领用记录</td></tr>'
-        
         html = f'''
         <!DOCTYPE html>
         <html lang="zh-CN">
@@ -346,7 +323,6 @@ def dashboard():
         </html>
         '''
     else:
-        # 全局看板 HTML
         dept_html = ''
         if dept_dict:
             for d, usages in dept_dict.items():
@@ -360,7 +336,6 @@ def dashboard():
                 '''
         if not dept_html:
             dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
-
         html = f'''
         <!DOCTYPE html>
         <html lang="zh-CN">
@@ -405,19 +380,15 @@ def webhook_grass():
     logging.info(f"收到草料推送数据: {data}")
     if not data:
         return jsonify({'status': 'error', 'message': '无数据'}), 400
-
     try:
         ref_data = data.get('data', {}).get('ref_data', {})
         form_name = ref_data.get('form', {}).get('name', '')
         fields = ref_data.get('fields', {})
         ref_qrcode = data.get('data', {}).get('ref_qrcode', {})
         item_name = ref_qrcode.get('fields', {}).get('资产名称') or ref_qrcode.get('name')
-        
         if not item_name:
             return jsonify({'status': 'error', 'message': '未找到物资名称'}), 400
-
         department = fields.get('所属部门') or fields.get('领用部门') or fields.get('部门')
-
         if '出库' in form_name:
             trans_type = 'out'
             quantity = fields.get('出库数量')
@@ -426,7 +397,6 @@ def webhook_grass():
             quantity = fields.get('入库数量')
         else:
             return jsonify({'status': 'error', 'message': f'未知的表单类型: {form_name}'}), 400
-            
         if not quantity:
             return jsonify({'status': 'error', 'message': '未在表单中找到数量'}), 400
 
@@ -436,7 +406,6 @@ def webhook_grass():
                 cursor.execute(f"USE {MYSQL_DATABASE}")
                 cursor.execute('SELECT id FROM items WHERE name = %s', (item_name,))
                 item = cursor.fetchone()
-                
                 if not item:
                     logging.warning(f"数据库中不存在物资 [{item_name}]，尝试自动创建...")
                     item_id = generate_item_id(item_name)
@@ -447,7 +416,6 @@ def webhook_grass():
                     ''', (item_id, item_name, unit))
                 else:
                     item_id = item['id']
-
                 cursor.execute('''
                     INSERT INTO transactions (item_id, type, quantity, department, note) 
                     VALUES (%s, %s, %s, %s, %s)
@@ -469,34 +437,27 @@ def init_data():
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('DELETE FROM items')
             cursor.execute('DELETE FROM transactions')
-            
             df = pd.read_excel('full_items.xlsx', sheet_name='物资编码')
             df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
-            
             imported_names = set()
             count = 0
             for index, row in df.iterrows():
                 name = str(row['物资名称']).replace("\n", "").strip()
                 if not name or name == 'nan': continue
-                
                 original_name = name
                 suffix = 1
                 while name in imported_names:
                     name = f"{original_name}({suffix})"
                     suffix += 1
                 imported_names.add(name)
-                
-                # 从“申采部门”获取归属部门
                 dept = str(row['申采部门']).replace('<br>', '').replace('\n', '').strip() if pd.notna(row['申采部门']) else '综合部'
                 if dept == 'nan' or not dept:
                     dept = '综合部'
-                
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
                     initial_stock = int(float(row['数量'])) if pd.notna(row['数量']) else 0
                 except:
                     initial_stock = 0
-                
                 item_id = generate_item_id(name)
                 cursor.execute('''
                     INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold, department)
@@ -530,26 +491,22 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
-    """检查各部门库存，向低于阈值的部门钉钉群发送预警"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT DISTINCT department FROM items WHERE department IS NOT NULL')
             depts = cursor.fetchall()
-            
             results = []
             for dept_row in depts:
                 dept = dept_row['department']
                 cursor.execute('SELECT * FROM items WHERE department = %s', (dept,))
                 items = cursor.fetchall()
-                
                 low_items = []
                 for item in items:
                     data = calc_stock(cursor, item)
                     if data['is_low']:
                         low_items.append(f"• {data['name']}：剩余 {data['real_stock']} {data['unit']}（阈值 {data['threshold']}）")
-                
                 if low_items:
                     msg = f"⚠️ {dept}物资预警\n以下物资库存不足，请及时采购：\n" + "\n".join(low_items)
                     send_dept_alert(dept, msg)
