@@ -7,6 +7,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 
+# ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 
@@ -17,17 +18,17 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 # ================= 部门名称归一化 =================
-# 把“安管部”统一成“秩序部”，其他部门保持不变
+# 把“安管部”统一成“秩序部”，避免同一部门出现两个看板
 DEPT_ALIAS = {
     '安管部': '秩序部',
 }
 def normalize_department(dept):
     if not dept:
         return dept
-    dept = dept.strip()
+    dept = str(dept).strip()
     return DEPT_ALIAS.get(dept, dept)
 
-# ================= 钉钉机器人 =================
+# ================= 钉钉机器人 Webhook 配置 =================
 DEPT_WEBHOOKS = {
     '综合部': 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1',
     '工程部': '',
@@ -36,7 +37,7 @@ DEPT_WEBHOOKS = {
 }
 
 def get_db():
-    """获取数据库连接，带自动重连"""
+    """获取数据库连接，带自动重连保护"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -101,6 +102,7 @@ init_db()
 
 # ================= 工具函数 =================
 def calc_stock(cursor, item):
+    """计算物资实时库存"""
     cursor.execute('''
         SELECT 
             COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
@@ -122,6 +124,7 @@ def calc_stock(cursor, item):
     }
 
 def send_dept_alert(department, message):
+    """向指定部门的钉钉群发送预警消息"""
     dept = normalize_department(department)
     webhook = DEPT_WEBHOOKS.get(dept)
     if not webhook:
@@ -171,6 +174,10 @@ BASE_STYLE = '''
     .quick-links { text-align: center; margin: 15px 0; }
     .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
     .quick-links a.active { background: #333; color: white; }
+    .search-bar { display: flex; gap: 8px; margin: 15px 0; }
+    .search-bar input[type="text"] { flex: 1; padding: 12px 16px; border: 1px solid #ddd; border-radius: 10px; font-size: 15px; outline: none; }
+    .search-bar input[type="text"]:focus { border-color: #333; }
+    .search-bar button { padding: 12px 24px; background: #333; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; }
 '''
 
 def render_low_stock_html(items):
@@ -250,7 +257,9 @@ def item_page(item_id):
 
 @app.route('/dashboard')
 def dashboard():
+    """全局看板 或 部门看板，支持 ?dept=部门名 和 ?q=搜索关键词"""
     dept = normalize_department(request.args.get('dept', '').strip())
+    query = request.args.get('q', '').strip()
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -260,6 +269,12 @@ def dashboard():
             all_items_data = [calc_stock(cursor, item) for item in items]
             all_low = [d for d in all_items_data if d['is_low']]
             all_low.sort(key=lambda x: x['real_stock'])
+            
+            # 搜索结果
+            search_results = None
+            if query:
+                search_results = [d for d in all_items_data if query.lower() in d['name'].lower()]
+                search_results.sort(key=lambda x: x['name'])
             
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
             
@@ -303,6 +318,44 @@ def dashboard():
     active_global = 'active' if not dept else ''
     quick_links += f'<a href="/dashboard" class="{active_global}">🌐 全局看板</a></div>'
 
+    # 搜索框（保留当前部门上下文）
+    search_bar = f'''
+    <form method="get" action="/dashboard" class="search-bar">
+        <input type="hidden" name="dept" value="{dept}">
+        <input type="text" name="q" value="{query}" placeholder="🔍 搜索物资名称...">
+        <button type="submit">搜索</button>
+    </form>
+    '''
+
+    # 搜索结果区域
+    search_html = ''
+    if query and search_results is not None:
+        if search_results:
+            rows = ''
+            for item in search_results:
+                status_color = '#e74c3c' if item['is_low'] else '#2ecc71'
+                status_text = '⚠️ 需采购' if item['is_low'] else '✅ 充足'
+                bg_color = '#fff5f5' if item['is_low'] else '#f0fdf4'
+                rows += f'''
+                <div class="low-item" style="border-left-color: {status_color}; background: {bg_color};">
+                    <div>
+                        <span class="name">{item['name']}</span>
+                        <span class="meta">[{item['department']}]</span>
+                        <span class="meta" style="color:{status_color}; font-weight:600;">{status_text}</span>
+                    </div>
+                    <div class="stock" style="color:{status_color};">{item['real_stock']} {item['unit']}</div>
+                </div>
+                '''
+            search_html = f'''
+            <div class="section-title">🔍 搜索结果："{query}"<span>{len(search_results)} 项</span></div>
+            <div class="card">{rows}</div>
+            '''
+        else:
+            search_html = f'''
+            <div class="section-title">🔍 搜索结果："{query}"<span>0 项</span></div>
+            <div class="card" style="text-align:center;color:#888;padding:20px;">没有找到匹配的物资</div>
+            '''
+
     if dept:
         usage_rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["total_qty"]} {u["unit"]}</td></tr>' for u in usages])
         if not usage_rows:
@@ -319,6 +372,8 @@ def dashboard():
         <body>
             {render_header(f"{dept} · 物资预警看板")}
             {quick_links}
+            {search_bar}
+            {search_html}
             <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div>
             <div class="card">{render_low_stock_html(my_low)}</div>
             <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div>
@@ -358,6 +413,8 @@ def dashboard():
         <body>
             {render_header("环球梦大厦 · 物资预警看板")}
             {quick_links}
+            {search_bar}
+            {search_html}
             <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div>
             <div class="card">{render_low_stock_html(all_low)}</div>
             <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>
