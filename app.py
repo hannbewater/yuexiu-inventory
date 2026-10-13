@@ -27,12 +27,16 @@ def normalize_department(dept):
     dept = str(dept).strip()
     return DEPT_ALIAS.get(dept, dept)
 
-# ================= 钉钉机器人 =================
-DEPT_WEBHOOKS = {
-    '综合部': 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1',
-    '工程部': '',
-    '秩序部': '',
-    '客服部': '',
+# ================= 钉钉统一预警群配置 =================
+# 所有部门的预警都发到这一个群
+ALERT_WEBHOOK = 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1'
+
+# 部门 -> 负责人手机号（钉钉 @ 人用手机号）
+DEPT_CONTACTS = {
+    '综合部': ['19874467403'],
+    '工程部': ['18666082342'],
+    '秩序部': ['19874467403'],   # 安管部已归一化为秩序部
+    '客服部': ['18666082342'],
 }
 
 def get_db():
@@ -120,18 +124,31 @@ def calc_stock(cursor, item):
         'is_low': real_stock <= item['low_stock_threshold']
     }
 
-def send_dept_alert(department, message):
-    dept = normalize_department(department)
-    webhook = DEPT_WEBHOOKS.get(dept)
-    if not webhook:
-        logging.warning(f"未配置部门 [{dept}] 的钉钉 Webhook，跳过推送")
+def send_alert_to_group(message, at_mobiles):
+    """向统一预警群发送 markdown 消息，并 @ 指定人员"""
+    if not ALERT_WEBHOOK:
+        logging.warning("未配置钉钉预警 Webhook，跳过推送")
         return False
-    data = {"msgtype": "text", "text": {"content": f"【库存预警】{message}"}}
+    
+    at_text = " ".join([f"@{m}" for m in at_mobiles]) if at_mobiles else ""
+    full_content = f"{message}\n\n{at_text}" if at_text else message
+    
+    data = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "库存预警",
+            "text": full_content
+        },
+        "at": {
+            "atMobiles": at_mobiles,
+            "isAtAll": False
+        }
+    }
     headers = {'Content-Type': 'application/json;charset=utf-8'}
     try:
-        resp = requests.post(webhook, json=data, headers=headers, timeout=5)
+        resp = requests.post(ALERT_WEBHOOK, json=data, headers=headers, timeout=5)
         if resp.status_code == 200 and resp.json().get('errcode') == 0:
-            logging.info(f"成功向 [{dept}] 钉钉群推送预警")
+            logging.info("成功推送预警到钉钉群")
             return True
         else:
             logging.error(f"钉钉推送失败: {resp.text}")
@@ -141,7 +158,6 @@ def send_dept_alert(department, message):
         return False
 
 def render_header():
-    """🌏 突出显示“环球梦大厦”"""
     return '''
     <div class="main-header">
         <img src="/static/logo.png" class="logo" alt="越秀服务" onerror="this.style.display='none'">
@@ -154,7 +170,6 @@ def render_header():
 
 BASE_STYLE = '''
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }
-    /* 🌏 顶部主标题（突出环球梦大厦） */
     .main-header { display: flex; align-items: center; background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%); padding: 18px 22px; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 16px; }
     .main-header .logo { height: 46px; object-fit: contain; margin-right: 16px; }
     .main-header .title-block { flex: 1; }
@@ -183,7 +198,6 @@ BASE_STYLE = '''
     .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
     .quick-links a.active { background: #333; color: white; }
 
-    /* 🔄 常用消耗物资 / 全物资 切换 Tab */
     .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; background: white; padding: 6px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     .view-tabs a { flex: 1; text-align: center; padding: 12px; border-radius: 8px; text-decoration: none; color: #666; font-size: 14px; font-weight: 600; transition: all 0.2s; }
     .view-tabs a.active { background: #333; color: white; }
@@ -211,7 +225,6 @@ def render_low_stock_html(items):
     return html
 
 def render_view_tabs(current_view, dept, query):
-    """渲染“常用消耗物资 / 全物资”切换 Tab，并保留 dept 和 q 参数"""
     def build_url(view):
         params = [f"view={view}"]
         if dept:
@@ -226,7 +239,7 @@ def render_view_tabs(current_view, dept, query):
     return f'''
     <div class="view-tabs">
         <a href="{build_url('common')}" class="{common_active}">常用消耗物资看板<span class="hint">重点关注 · 待配置</span></a>
-        <a href="{build_url('all')}" class="{all_active}">全物资看板<span class="hint">全部 {""}</span></a>
+        <a href="{build_url('all')}" class="{all_active}">全物资看板<span class="hint">全部物资</span></a>
     </div>
     '''
 
@@ -295,8 +308,6 @@ def item_page(item_id):
 def dashboard():
     dept = normalize_department(request.args.get('dept', '').strip())
     query = request.args.get('q', '').strip()
-    # 🌟 视图类型：common（常用消耗物资）/ all（全物资）
-    # 目前两种视图都展示全部物资（常用消耗物资尚未统计）
     view = request.args.get('view', 'all').strip()
     if view not in ['common', 'all']:
         view = 'all'
@@ -605,31 +616,56 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
+    """扫描所有部门缺货，汇总成一条消息发到统一预警群，@ 对应负责人"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('SELECT DISTINCT department FROM items WHERE department IS NOT NULL')
             depts = cursor.fetchall()
-            results = []
+            
+            all_depts_low = {}
+            at_mobiles_set = set()
+            
             for dept_row in depts:
                 dept = normalize_department(dept_row['department'])
                 cursor.execute('SELECT * FROM items WHERE department = %s', (dept,))
                 items = cursor.fetchall()
+                
                 low_items = []
                 for item in items:
                     data = calc_stock(cursor, item)
                     if data['is_low']:
-                        low_items.append(f"• {data['name']}：剩余 {data['real_stock']} {data['unit']}（阈值 {data['threshold']}）")
+                        low_items.append(f"> {data['name']}：剩余 **{data['real_stock']}** {data['unit']}（阈值 {data['threshold']}）")
+                
                 if low_items:
-                    msg = f"⚠️ {dept}物资预警\n以下物资库存不足，请及时采购：\n" + "\n".join(low_items)
-                    send_dept_alert(dept, msg)
-                    results.append(f"{dept}: {len(low_items)}项已推送")
-                else:
-                    results.append(f"{dept}: 库存充足")
-        return " | ".join(results)
+                    all_depts_low[dept] = low_items
+                    for phone in DEPT_CONTACTS.get(dept, []):
+                        at_mobiles_set.add(phone)
     finally:
         conn.close()
+    
+    if not all_depts_low:
+        return "✅ 所有部门物资库存充足，无需推送"
+    
+    lines = ["#### 🚨 环球梦大厦 · 库存预警", ""]
+    lines.append(f"**共 {len(all_depts_low)} 个部门有物资缺货，请及时采购：**")
+    lines.append("")
+    for dept, low_items in all_depts_low.items():
+        lines.append(f"**【{dept}】**")
+        lines.extend(low_items)
+        lines.append("")
+    
+    message = "\n".join(lines)
+    at_mobiles = list(at_mobiles_set)
+    
+    success = send_alert_to_group(message, at_mobiles)
+    
+    if success:
+        dept_summary = "、".join([f"{d}({len(items)}项)" for d, items in all_depts_low.items()])
+        return f"✅ 已推送：{dept_summary}，共 @{len(at_mobiles)} 人"
+    else:
+        return "❌ 推送失败，请检查钉钉机器人配置"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
