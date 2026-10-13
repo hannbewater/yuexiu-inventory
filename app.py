@@ -16,17 +16,27 @@ MYSQL_USERNAME = os.environ.get("MYSQL_USERNAME")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
+# ================= 部门名称归一化 =================
+# 把“安管部”统一成“秩序部”，其他部门保持不变
+DEPT_ALIAS = {
+    '安管部': '秩序部',
+}
+def normalize_department(dept):
+    if not dept:
+        return dept
+    dept = dept.strip()
+    return DEPT_ALIAS.get(dept, dept)
+
 # ================= 钉钉机器人 =================
 DEPT_WEBHOOKS = {
     '综合部': 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1',
     '工程部': '',
-    '秩序部': '',
+    '秩序部': '',   # 安管部也归到这里
     '客服部': '',
-    '安管部': '',
 }
 
 def get_db():
-    """获取数据库连接，带自动重连保护"""
+    """获取数据库连接，带自动重连"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -35,7 +45,6 @@ def get_db():
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True
     )
-    # 关键：检查连接是否有效，无效则自动重连
     conn.ping(reconnect=True)
     return conn
 
@@ -108,21 +117,22 @@ def calc_stock(cursor, item):
         'total_in': stats['total_in'],
         'total_out': stats['total_out'],
         'threshold': item['low_stock_threshold'],
-        'department': item.get('department') or '未分配',
+        'department': normalize_department(item.get('department')) or '未分配',
         'is_low': real_stock <= item['low_stock_threshold']
     }
 
 def send_dept_alert(department, message):
-    webhook = DEPT_WEBHOOKS.get(department)
+    dept = normalize_department(department)
+    webhook = DEPT_WEBHOOKS.get(dept)
     if not webhook:
-        logging.warning(f"未配置部门 [{department}] 的钉钉 Webhook，跳过推送")
+        logging.warning(f"未配置部门 [{dept}] 的钉钉 Webhook，跳过推送")
         return False
     data = {"msgtype": "text", "text": {"content": f"【库存预警】{message}"}}
     headers = {'Content-Type': 'application/json;charset=utf-8'}
     try:
         resp = requests.post(webhook, json=data, headers=headers, timeout=5)
         if resp.status_code == 200 and resp.json().get('errcode') == 0:
-            logging.info(f"成功向 [{department}] 钉钉群推送预警")
+            logging.info(f"成功向 [{dept}] 钉钉群推送预警")
             return True
         else:
             logging.error(f"钉钉推送失败: {resp.text}")
@@ -240,7 +250,7 @@ def item_page(item_id):
 
 @app.route('/dashboard')
 def dashboard():
-    dept = request.args.get('dept', '').strip()
+    dept = normalize_department(request.args.get('dept', '').strip())
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -277,7 +287,7 @@ def dashboard():
                 dept_usage = cursor.fetchall()
                 dept_dict = {}
                 for row in dept_usage:
-                    d = row['department']
+                    d = normalize_department(row['department'])
                     dept_dict.setdefault(d, []).append({
                         'name': re.sub(r'\(\d+\)$', '', row['name']),
                         'unit': row['unit'],
@@ -287,7 +297,7 @@ def dashboard():
         conn.close()
 
     quick_links = '<div class="quick-links">'
-    for d in ['综合部', '工程部', '秩序部', '客服部', '安管部']:
+    for d in ['综合部', '工程部', '秩序部', '客服部']:
         active = 'active' if d == dept else ''
         quick_links += f'<a href="/dashboard?dept={d}" class="{active}">{d}</a>'
     active_global = 'active' if not dept else ''
@@ -389,6 +399,7 @@ def webhook_grass():
         if not item_name:
             return jsonify({'status': 'error', 'message': '未找到物资名称'}), 400
         department = fields.get('所属部门') or fields.get('领用部门') or fields.get('部门')
+        department = normalize_department(department)
         if '出库' in form_name:
             trans_type = 'out'
             quantity = fields.get('出库数量')
@@ -453,6 +464,7 @@ def init_data():
                 dept = str(row['申采部门']).replace('<br>', '').replace('\n', '').strip() if pd.notna(row['申采部门']) else '综合部'
                 if dept == 'nan' or not dept:
                     dept = '综合部'
+                dept = normalize_department(dept)
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
                 try:
                     initial_stock = int(float(row['数量'])) if pd.notna(row['数量']) else 0
@@ -465,7 +477,7 @@ def init_data():
                 ''', (item_id, name, unit, initial_stock, dept))
                 count += 1
         conn.commit()
-        return f"🎉 成功导入 {count} 种物资！已根据“申采部门”自动分配归属部门。"
+        return f"🎉 成功导入 {count} 种物资！已根据“申采部门”自动分配归属部门（安管部已统一为秩序部）。"
     except Exception as e:
         return f"导入失败: {str(e)}"
     finally:
@@ -499,7 +511,7 @@ def check_alerts():
             depts = cursor.fetchall()
             results = []
             for dept_row in depts:
-                dept = dept_row['department']
+                dept = normalize_department(dept_row['department'])
                 cursor.execute('SELECT * FROM items WHERE department = %s', (dept,))
                 items = cursor.fetchall()
                 low_items = []
