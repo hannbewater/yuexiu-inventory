@@ -743,36 +743,53 @@ def setup_stock():
             cursor.execute(f"USE {MYSQL_DATABASE}")
             results = []
             
-            # 客服部 - 擦手纸：680包，预警180
+            # ========== 客服部 ==========
+            # 擦手纸：保留 7c0c2b7e1a（碧红/碧红），软删其他2条
+            cursor.execute('''UPDATE items SET is_deleted=1 
+                WHERE is_deleted=0 AND name LIKE %s AND id != %s''', ('%擦手纸%', '7c0c2b7e1a'))
+            results.append(f"擦手纸 删除重复: {cursor.rowcount}条")
             cursor.execute('''UPDATE items SET initial_stock=680, low_stock_threshold=180, unit='包'
-                WHERE is_deleted=0 AND name LIKE %s''', ('%擦手纸%',))
-            results.append(f"擦手纸: {cursor.rowcount}条")
+                WHERE id=%s''', ('7c0c2b7e1a',))
+            results.append(f"擦手纸 设置库存680包/预警180: {cursor.rowcount}条")
             
-            # 客服部 - 大卷纸/卷纸：552卷，预警96
+            # 大卷纸：保留 fc0ed139b3（碧红顺洁/700克/卷 12卷/箱），软删其他3条
+            cursor.execute('''UPDATE items SET is_deleted=1 
+                WHERE is_deleted=0 AND (name LIKE %s OR name LIKE %s) AND id != %s''', 
+                ('%大卷纸%', '%卷纸%', 'fc0ed139b3'))
+            results.append(f"大卷纸 删除重复: {cursor.rowcount}条")
             cursor.execute('''UPDATE items SET initial_stock=552, low_stock_threshold=96, unit='卷'
-                WHERE is_deleted=0 AND (name LIKE %s OR name LIKE %s)''', ('%大卷纸%', '%卷纸%'))
-            results.append(f"大卷纸: {cursor.rowcount}条")
+                WHERE id=%s''', ('fc0ed139b3',))
+            results.append(f"大卷纸 设置库存552卷/预警96: {cursor.rowcount}条")
             
-            # 客服部 - 坐垫纸：125盒，预警25
+            # 坐垫纸：保留 af26543925（四季旺），软删其他2条
+            cursor.execute('''UPDATE items SET is_deleted=1 
+                WHERE is_deleted=0 AND name LIKE %s AND id != %s''', ('%坐垫纸%', 'af26543925'))
+            results.append(f"坐垫纸 删除重复: {cursor.rowcount}条")
             cursor.execute('''UPDATE items SET initial_stock=125, low_stock_threshold=25, unit='盒'
-                WHERE is_deleted=0 AND name LIKE %s''', ('%坐垫纸%',))
-            results.append(f"坐垫纸: {cursor.rowcount}条")
+                WHERE id=%s''', ('af26543925',))
+            results.append(f"坐垫纸 设置库存125盒/预警25: {cursor.rowcount}条")
             
-            # 秩序部 - 邦固黄黑警示带：10卷，预警5
+            # ========== 秩序部/工程部警示带 ==========
+            # 邦固黄黑警示带：10卷/预警5
             cursor.execute('''UPDATE items SET initial_stock=10, low_stock_threshold=5, unit='卷'
-                WHERE is_deleted=0 AND name LIKE %s AND brand LIKE %s''', ('%警示带%', '%邦固%'))
-            results.append(f"邦固警示带: {cursor.rowcount}条")
+                WHERE id=%s''', ('13813139f4',))
+            results.append(f"邦固警示带 设置库存10卷/预警5: {cursor.rowcount}条")
             
-            # 秩序部 - 友安红白警示带：30卷，预警10
+            # 友安红白警示带：30卷/预警10
             cursor.execute('''UPDATE items SET initial_stock=30, low_stock_threshold=10, unit='卷'
-                WHERE is_deleted=0 AND name LIKE %s AND brand LIKE %s''', ('%警示带%', '%友安%'))
-            results.append(f"友安警示带: {cursor.rowcount}条")
+                WHERE id=%s''', ('288fbd9f9f',))
+            results.append(f"友安警示带 设置库存30卷/预警10: {cursor.rowcount}条")
+            
+            # 浙安警示带：软删除
+            cursor.execute('UPDATE items SET is_deleted=1 WHERE id=%s', ('81992a4a4b',))
+            results.append(f"浙安警示带 删除: {cursor.rowcount}条")
+            
+            # 综合部库存所有物资的初始库存和预警值保持不变（都是0和5）
             
         conn.commit()
         return "✅ 设置完成：<br>" + "<br>".join(results)
     finally:
         conn.close()
-
 @app.route('/api/export_links')
 def export_links():
     conn = get_db()
