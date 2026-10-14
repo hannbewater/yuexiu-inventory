@@ -7,6 +7,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 
+# ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 
@@ -32,7 +33,6 @@ DEPT_CONTACTS = {
 }
 
 def get_db():
-    """获取数据库连接，带自动重连和超时设置"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
@@ -98,9 +98,9 @@ def generate_item_id(name):
 
 init_db()
 
-# ================= 核心：一次查询取回所有物资库存 =================
+# ================= 工具函数 =================
 def get_all_items_with_stock():
-    """一次性 JOIN 查询，避免对391个物资逐个查询导致连接断开"""
+    """一次性 JOIN 查询所有物资库存"""
     conn = get_db()
     try:
         with conn.cursor() as cursor:
@@ -121,6 +121,7 @@ def get_all_items_with_stock():
                 result.append({
                     'id': row['id'],
                     'name': re.sub(r'\(\d+\)$', '', row['name']),
+                    'full_name': row['name'],
                     'unit': row['unit'],
                     'real_stock': real_stock,
                     'total_in': row['total_in'],
@@ -134,8 +135,7 @@ def get_all_items_with_stock():
         conn.close()
 
 def send_alert_to_group(message, at_mobiles):
-    if not ALERT_WEBHOOK:
-        return False
+    if not ALERT_WEBHOOK: return False
     at_text = " ".join([f"@{m}" for m in at_mobiles]) if at_mobiles else ""
     full_content = f"{message}\n\n{at_text}" if at_text else message
     data = {
@@ -257,12 +257,9 @@ def item_page(item_id):
                 return "<h2 style='text-align:center;margin-top:50px;'>物资不存在</h2>", 404
             real_stock = row['initial_stock'] + row['total_in'] - row['total_out']
             data = {
-                'id': row['id'],
-                'name': re.sub(r'\(\d+\)$', '', row['name']),
-                'unit': row['unit'],
-                'real_stock': real_stock,
-                'total_in': row['total_in'],
-                'total_out': row['total_out'],
+                'id': row['id'], 'name': re.sub(r'\(\d+\)$', '', row['name']),
+                'unit': row['unit'], 'real_stock': real_stock,
+                'total_in': row['total_in'], 'total_out': row['total_out'],
                 'threshold': row['low_stock_threshold'],
                 'department': normalize_department(row.get('department')) or '未分配',
                 'is_low': real_stock <= row['low_stock_threshold']
@@ -318,24 +315,31 @@ def dashboard():
     view = request.args.get('view', 'all').strip()
     if view not in ['common', 'all']: view = 'all'
     
-    # 🌟 一次性取出所有物资库存（避免N次查询断开连接）
     all_items_data = get_all_items_with_stock()
-    all_low = [d for d in all_items_data if d['is_low']]
-    all_low.sort(key=lambda x: x['real_stock'])
+    # 只显示有库存的物资
+    positive_items = [d for d in all_items_data if d['real_stock'] > 0]
     
     search_results = None
     if query:
-        search_results = [d for d in all_items_data if query.lower() in d['name'].lower()]
+        search_results = [d for d in positive_items if query.lower() in d['name'].lower()]
         search_results.sort(key=lambda x: x['name'])
     
-    # 部门相关数据
+    # 按部门分组
+    dept_items = {}
+    for item in positive_items:
+        d = item['department']
+        dept_items.setdefault(d, []).append(item)
+    for d in dept_items:
+        dept_items[d].sort(key=lambda x: x['name'])
+    
+    # 部门领用统计
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
             if dept:
-                my_low = [d for d in all_low if d['department'] == dept]
+                my_items = [d for d in positive_items if d['department'] == dept]
                 cursor.execute('''
                     SELECT i.name, i.unit, SUM(t.quantity) as total_qty
                     FROM transactions t
@@ -347,6 +351,7 @@ def dashboard():
                 usages = cursor.fetchall()
                 dept_dict = None
             else:
+                my_items = None
                 cursor.execute('''
                     SELECT t.department, i.name, i.unit, SUM(t.quantity) as total_out_qty
                     FROM transactions t
@@ -413,33 +418,371 @@ def dashboard():
         usage_rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["total_qty"]} {u["unit"]}</td></tr>' for u in usages])
         if not usage_rows:
             usage_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无领用记录</td></tr>'
+        
+        my_items_rows = ''
+        for item in my_items:
+            low_color = '#e74c3c' if item['is_low'] else '#333'
+            low_badge = ' <span style="color:#e74c3c;font-size:11px;">⚠️ 需采购</span>' if item['is_low'] else ''
+            my_items_rows += f'''<tr><td>{item['name']}{low_badge}</td><td class="num" style="color:{low_color};">{item['real_stock']} {item['unit']}</td></tr>'''
+        if not my_items_rows:
+            my_items_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无库存物资</td></tr>'
+        
         html = f'''
         <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>{dept} · {view_label}</title><style>{BASE_STYLE}</style></head><body>
             {render_header()}{view_tabs}{quick_links}{search_bar}{search_html}
-            <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(my_low)}</div>
-            <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(all_low)}</div>
+            <div class="section-title">📦 {dept}物资库存清单<span>{len(my_items)} 项</span></div>
+            <div class="scroll-card"><table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{my_items_rows}</tbody></table></div>
             <div class="section-title" style="margin-top:24px;">📊 {dept}近30天领用记录</div>
             <div class="scroll-card"><table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead><tbody>{usage_rows}</tbody></table></div>
             <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
         </body></html>'''
     else:
         dept_html = ''
+        if dept_items:
+            for d, items in dept_items.items():
+                rows = ''
+                for item in items:
+                    low_color = '#e74c3c' if item['is_low'] else '#333'
+                    low_badge = ' <span style="color:#e74c3c;font-size:11px;">⚠️ 需采购</span>' if item['is_low'] else ''
+                    rows += f'''<tr><td>{item['name']}{low_badge}</td><td class="num" style="color:{low_color};">{item['real_stock']} {item['unit']}</td></tr>'''
+                dept_html += f'''<div class="scroll-card" style="margin-bottom: 12px;"><div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}（{len(items)} 项）</div><table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table></div>'''
+        else:
+            dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无有库存的物资</div>'
+        
+        usage_dept_html = ''
         if dept_dict:
             for d, usages in dept_dict.items():
                 rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["qty"]} {u["unit"]}</td></tr>' for u in usages])
-                dept_html += f'''<div class="scroll-card" style="margin-bottom: 12px;"><div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}</div><table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead><tbody>{rows}</tbody></table></div>'''
-        if not dept_html:
-            dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
+                usage_dept_html += f'''<div class="scroll-card" style="margin-bottom: 12px;"><div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}</div><table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead><tbody>{rows}</tbody></table></div>'''
+        if not usage_dept_html:
+            usage_dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
+        
         html = f'''
         <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>环球梦大厦 · {view_label}</title><style>{BASE_STYLE}</style></head><body>
             {render_header()}{view_tabs}{quick_links}{search_bar}{search_html}
-            <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(all_low)}</div>
-            <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>{dept_html}
+            <div class="section-title">📦 各部门物资库存清单<span>{len(positive_items)} 项</span></div>{dept_html}
+            <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>{usage_dept_html}
             <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
         </body></html>'''
     return html
 
-# ================= API 接口 =================
+# ================= 🛠️ 管理后台 =================
+
+@app.route('/admin')
+def admin_page():
+    keyword = request.args.get('q', '').strip()
+    dept_filter = request.args.get('dept', '').strip()
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            sql = '''
+                SELECT i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department,
+                       COALESCE(SUM(CASE WHEN t.type = 'in' THEN t.quantity ELSE 0 END), 0) AS total_in,
+                       COALESCE(SUM(CASE WHEN t.type = 'out' THEN t.quantity ELSE 0 END), 0) AS total_out
+                FROM items i
+                LEFT JOIN transactions t ON i.id = t.item_id
+                WHERE 1=1
+            '''
+            params = []
+            if keyword:
+                sql += " AND i.name LIKE %s"
+                params.append(f"%{keyword}%")
+            if dept_filter:
+                sql += " AND i.department = %s"
+                params.append(dept_filter)
+            sql += " GROUP BY i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department ORDER BY i.department, i.name"
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+    
+    rows_html = ''
+    for r in rows:
+        real_stock = r['initial_stock'] + r['total_in'] - r['total_out']
+        current_dept = r['department'] or ''
+        dept_options = ''.join([f'<option value="{d}" {"selected" if d == current_dept else ""}>{d}</option>' for d in ['综合部','工程部','秩序部','客服部','未分配']])
+        stock_color = '#e74c3c' if real_stock <= r['low_stock_threshold'] else '#333'
+        rows_html += f'''
+        <tr data-id="{r['id']}">
+            <td style="font-size:11px;color:#999;font-family:monospace;">{r['id']}</td>
+            <td><input class="name" type="text" value="{r['name']}" style="width:130px;padding:4px;"></td>
+            <td><input class="unit" type="text" value="{r['unit']}" style="width:40px;padding:4px;"></td>
+            <td><select class="department" style="padding:4px;">{dept_options}</select></td>
+            <td><input class="initial_stock" type="number" value="{r['initial_stock']}" style="width:70px;padding:4px;"></td>
+            <td><input class="low_stock_threshold" type="number" value="{r['low_stock_threshold']}" style="width:60px;padding:4px;"></td>
+            <td style="font-weight:600;color:{stock_color};">{real_stock}</td>
+            <td style="white-space:nowrap;">
+                <button onclick="saveItem(this, '{r['id']}')" style="padding:4px 8px;background:#2ecc71;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:2px;">保存</button>
+                <button onclick="adjustStock('{r['id']}', 'in')" style="padding:4px 8px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:2px;">入库</button>
+                <button onclick="adjustStock('{r['id']}', 'out')" style="padding:4px 8px;background:#f39c12;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:2px;">出库</button>
+                <button onclick="deleteItem('{r['id']}')" style="padding:4px 8px;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer;">删除</button>
+            </td>
+        </tr>
+        '''
+    
+    html = f'''
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>物资管理后台</title>
+        <style>
+            body {{ font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }}
+            h1 {{ font-size: 20px; }}
+            .toolbar {{ display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }}
+            .toolbar input, .toolbar select {{ padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; }}
+            .toolbar button {{ padding: 8px 16px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }}
+            .add-box {{ background: white; padding: 16px; border-radius: 12px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
+            .add-box input, .add-box select {{ padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-right: 8px; }}
+            .add-box button {{ padding: 8px 16px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }}
+            table {{ width: 100%; background: white; border-radius: 12px; border-collapse: collapse; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
+            th {{ background: #f8f9fa; padding: 12px 8px; text-align: left; font-size: 13px; color: #666; border-bottom: 2px solid #eee; }}
+            td {{ padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }}
+            tr:hover {{ background: #fafafa; }}
+        </style>
+        <script>
+            function saveItem(btn, id) {{
+                const row = btn.closest('tr');
+                const data = {{
+                    id: id,
+                    name: row.querySelector('.name').value,
+                    unit: row.querySelector('.unit').value,
+                    department: row.querySelector('.department').value,
+                    initial_stock: parseInt(row.querySelector('.initial_stock').value || '0'),
+                    low_stock_threshold: parseInt(row.querySelector('.low_stock_threshold').value || '5')
+                }};
+                fetch('/api/admin/update', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify(data)
+                }}).then(r => r.json()).then(res => {{
+                    alert(res.message);
+                    if (res.success) location.reload();
+                }});
+            }}
+            
+            function deleteItem(id) {{
+                if (!confirm('确认删除该物资？该操作会同时删除所有出入库记录，不可恢复！')) return;
+                fetch('/api/admin/delete', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{id: id}})
+                }}).then(r => r.json()).then(res => {{
+                    alert(res.message);
+                    if (res.success) location.reload();
+                }});
+            }}
+            
+            function adjustStock(id, type) {{
+                const label = type === 'in' ? '入库' : '出库';
+                const qty = prompt('请输入' + label + '数量：');
+                if (!qty || isNaN(parseInt(qty))) return;
+                fetch('/api/admin/adjust_stock', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{id: id, type: type, quantity: parseInt(qty)}})
+                }}).then(r => r.json()).then(res => {{
+                    alert(res.message);
+                    if (res.success) location.reload();
+                }});
+            }}
+            
+            function addItem() {{
+                const data = {{
+                    name: document.getElementById('new_name').value.trim(),
+                    unit: document.getElementById('new_unit').value.trim() || '个',
+                    department: document.getElementById('new_department').value,
+                    initial_stock: parseInt(document.getElementById('new_initial_stock').value || '0'),
+                    low_stock_threshold: parseInt(document.getElementById('new_low_stock_threshold').value || '5')
+                }};
+                if (!data.name) {{ alert('请填写物资名称'); return; }}
+                fetch('/api/admin/add', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify(data)
+                }}).then(r => r.json()).then(res => {{
+                    alert(res.message);
+                    if (res.success) location.reload();
+                }});
+            }}
+        </script>
+    </head>
+    <body>
+        <h1>🛠️ 环球梦大厦 · 物资管理后台</h1>
+        
+        <div class="add-box">
+            <div style="font-weight:700; margin-bottom:10px;">➕ 新增物资</div>
+            <input id="new_name" type="text" placeholder="物资名称" style="width:180px;">
+            <input id="new_unit" type="text" placeholder="单位（默认个）" style="width:100px;">
+            <select id="new_department">
+                <option value="综合部">综合部</option>
+                <option value="工程部">工程部</option>
+                <option value="秩序部">秩序部</option>
+                <option value="客服部">客服部</option>
+            </select>
+            <input id="new_initial_stock" type="number" placeholder="初始库存" style="width:90px;">
+            <input id="new_low_stock_threshold" type="number" placeholder="预警值" style="width:80px;">
+            <button onclick="addItem()">新增</button>
+        </div>
+        
+        <div class="toolbar">
+            <form method="get" action="/admin" style="display:flex; gap:8px; align-items:center;">
+                <input type="text" name="q" value="{keyword}" placeholder="🔍 搜索物资名称...">
+                <select name="dept">
+                    <option value="">全部部门</option>
+                    <option value="综合部" {"selected" if dept_filter == "综合部" else ""}>综合部</option>
+                    <option value="工程部" {"selected" if dept_filter == "工程部" else ""}>工程部</option>
+                    <option value="秩序部" {"selected" if dept_filter == "秩序部" else ""}>秩序部</option>
+                    <option value="客服部" {"selected" if dept_filter == "客服部" else ""}>客服部</option>
+                </select>
+                <button type="submit">搜索</button>
+                <a href="/admin" style="padding:8px 16px; background:#eee; color:#333; border-radius:6px; text-decoration:none;">重置</a>
+            </form>
+            <span style="color:#888; font-size:13px;">共 {len(rows)} 项</span>
+        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>名称</th>
+                    <th>单位</th>
+                    <th>归属部门</th>
+                    <th>初始库存</th>
+                    <th>预警值</th>
+                    <th>当前库存</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html if rows_html else '<tr><td colspan="8" style="text-align:center;padding:40px;color:#888;">暂无物资</td></tr>'}
+            </tbody>
+        </table>
+    </body>
+    </html>
+    '''
+    return html
+
+# ================= 管理后台 API =================
+
+@app.route('/api/admin/update', methods=['POST'])
+def admin_update():
+    data = request.json or {}
+    item_id = data.get('id')
+    if not item_id:
+        return jsonify({'success': False, 'message': '缺少ID'})
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('''
+                UPDATE items SET name=%s, unit=%s, department=%s, initial_stock=%s, low_stock_threshold=%s
+                WHERE id=%s
+            ''', (
+                data.get('name', ''),
+                data.get('unit', '个'),
+                normalize_department(data.get('department', '')),
+                int(data.get('initial_stock', 0)),
+                int(data.get('low_stock_threshold', 5)),
+                item_id
+            ))
+        conn.commit()
+        return jsonify({'success': True, 'message': f'已更新物资 {data.get("name")}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/api/admin/delete', methods=['POST'])
+def admin_delete():
+    data = request.json or {}
+    item_id = data.get('id')
+    if not item_id:
+        return jsonify({'success': False, 'message': '缺少ID'})
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('DELETE FROM transactions WHERE item_id = %s', (item_id,))
+            cursor.execute('DELETE FROM items WHERE id = %s', (item_id,))
+        conn.commit()
+        return jsonify({'success': True, 'message': '已删除'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/api/admin/add', methods=['POST'])
+def admin_add():
+    data = request.json or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': '物资名称不能为空'})
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            base_id = generate_item_id(name)
+            item_id = base_id
+            suffix = 1
+            while True:
+                cursor.execute('SELECT id FROM items WHERE id = %s', (item_id,))
+                if not cursor.fetchone():
+                    break
+                item_id = f"{base_id[:6]}{suffix}"
+                suffix += 1
+            
+            cursor.execute('''
+                INSERT INTO items (id, name, unit, department, initial_stock, low_stock_threshold)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (
+                item_id, name,
+                data.get('unit', '个'),
+                normalize_department(data.get('department', '综合部')),
+                int(data.get('initial_stock', 0)),
+                int(data.get('low_stock_threshold', 5))
+            ))
+        conn.commit()
+        return jsonify({'success': True, 'message': f'已新增 {name}（ID: {item_id}）'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/api/admin/adjust_stock', methods=['POST'])
+def admin_adjust_stock():
+    data = request.json or {}
+    item_id = data.get('id')
+    trans_type = data.get('type')
+    quantity = data.get('quantity')
+    if not item_id or trans_type not in ['in', 'out'] or not quantity:
+        return jsonify({'success': False, 'message': '参数错误'})
+    try:
+        quantity = int(quantity)
+        if quantity <= 0:
+            return jsonify({'success': False, 'message': '数量必须大于0'})
+    except:
+        return jsonify({'success': False, 'message': '数量格式错误'})
+    
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('''
+                INSERT INTO transactions (item_id, type, quantity, department, note)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (item_id, trans_type, quantity, None, '后台手动调整'))
+        conn.commit()
+        label = '入库' if trans_type == 'in' else '出库'
+        return jsonify({'success': True, 'message': f'已{label} {quantity}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+    finally:
+        conn.close()
+
+# ================= 通用 API =================
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
@@ -543,24 +886,18 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
-    """一次性取出所有物资，扫描缺货，汇总推送"""
     all_items_data = get_all_items_with_stock()
     all_low = [d for d in all_items_data if d['is_low']]
-    
     if not all_low:
         return "✅ 所有部门物资库存充足，无需推送"
-    
-    # 按部门分组
     all_depts_low = {}
     for item in all_low:
         dept = item['department']
         all_depts_low.setdefault(dept, []).append(item)
-    
     at_mobiles_set = set()
     for dept in all_depts_low.keys():
         for phone in DEPT_CONTACTS.get(dept, []):
             at_mobiles_set.add(phone)
-    
     lines = ["#### 🚨 环球梦大厦 · 库存预警", ""]
     lines.append(f"**共 {len(all_depts_low)} 个部门有物资缺货，请及时采购：**")
     lines.append("")
@@ -569,11 +906,9 @@ def check_alerts():
         for item in items:
             lines.append(f"> {item['name']}：剩余 **{item['real_stock']}** {item['unit']}（阈值 {item['threshold']}）")
         lines.append("")
-    
     message = "\n".join(lines)
     at_mobiles = list(at_mobiles_set)
     success = send_alert_to_group(message, at_mobiles)
-    
     if success:
         dept_summary = "、".join([f"{d}({len(items)}项)" for d, items in all_depts_low.items()])
         return f"✅ 已推送：{dept_summary}，共 @{len(at_mobiles)} 人"
