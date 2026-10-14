@@ -22,10 +22,6 @@ def normalize_department(dept):
     if not dept: return dept
     return DEPT_ALIAS.get(str(dept).strip(), str(dept).strip())
 
-# ============ 部门可见范围 ============
-# None = 显示该部门全部物资
-# []   = 不显示任何物资
-# [..] = 显示名称包含关键词的物资（不限部门，只看名字）
 DEPT_VISIBLE_ITEMS = {
     '综合部': None,
     '客服部': ['擦手纸', '坐垫纸', '大卷纸'],
@@ -36,21 +32,17 @@ DEPT_VISIBLE_ITEMS = {
 def filter_items_for_dept(items, dept):
     if dept not in DEPT_VISIBLE_ITEMS: return []
     whitelist = DEPT_VISIBLE_ITEMS[dept]
-    if whitelist is None:
-        return [it for it in items if it['department'] == dept]
-    if not whitelist:
-        return []
-    # 按名称关键词匹配，不限部门
+    if whitelist is None: return [it for it in items if it['department'] == dept]
+    if not whitelist: return []
     return [it for it in items if any(kw in it['name'] for kw in whitelist)]
 
 def get_all_visible_items(all_items):
     visible = []
-    seen_ids = set()
+    seen = set()
     for dept in DEPT_VISIBLE_ITEMS.keys():
         for it in filter_items_for_dept(all_items, dept):
-            if it['id'] not in seen_ids:
-                visible.append(it)
-                seen_ids.add(it['id'])
+            if it['id'] not in seen:
+                visible.append(it); seen.add(it['id'])
     return visible
 
 ALERT_WEBHOOK = 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1'
@@ -140,9 +132,6 @@ def init_db():
             ]:
                 try: cursor.execute(sql)
                 except Exception: pass
-        logging.info("数据库初始化完成")
-    except Exception as e:
-        logging.error(f"数据库初始化失败: {e}")
     finally:
         conn.close()
 
@@ -467,7 +456,7 @@ def admin_page():
             params = []
             if keyword: sql += " AND i.name LIKE %s"; params.append(f"%{keyword}%")
             if dept_filter: sql += " AND i.department LIKE %s"; params.append(f"%{dept_filter}%")
-            sql += " GROUP BY i.id ORDER BY i.department, i.name LIMIT 500"
+            sql += " GROUP BY i.id ORDER BY i.department, i.name LIMIT 300"
             cursor.execute(sql, params)
             rows = cursor.fetchall()
     finally:
@@ -479,15 +468,12 @@ def admin_page():
         opts = ''.join([f'<option value="{d}" {"selected" if d==r["department"] else ""}>{d}</option>' for d in ['综合部','工程部','秩序部','客服部','未分配']])
         sc = '#e74c3c' if rs <= float(r['low_stock_threshold'] or 5) else '#333'
         rows_html += f'''<tr data-id="{r['id']}">
-            <td><input class="name" type="text" value="{r['name']}" style="width:130px;padding:4px;"></td>
+            <td><input class="name" type="text" value="{r['name']}" style="width:120px;padding:4px;"></td>
             <td><input class="brand" type="text" value="{r.get('brand') or ''}" style="width:70px;padding:4px;"></td>
-            <td><input class="spec" type="text" value="{(r.get('spec') or '').replace('"','&quot;')[:50]}" style="width:140px;padding:4px;"></td>
             <td><input class="unit" type="text" value="{r['unit']}" style="width:40px;padding:4px;"></td>
-            <td><input class="sub_unit" type="text" value="{r.get('sub_unit') or ''}" style="width:40px;padding:4px;"></td>
-            <td><input class="conversion" type="number" step="0.01" value="{r.get('conversion') or ''}" style="width:55px;padding:4px;"></td>
             <td><input class="department" type="text" value="{r['department'] or ''}" style="width:80px;padding:4px;"></td>
-            <td><input class="initial_stock" type="number" step="0.01" value="{r['initial_stock']}" style="width:55px;padding:4px;"></td>
-            <td><input class="low_stock_threshold" type="number" step="0.01" value="{r['low_stock_threshold']}" style="width:55px;padding:4px;"></td>
+            <td><input class="initial_stock" type="number" step="0.01" value="{r['initial_stock']}" style="width:60px;padding:4px;"></td>
+            <td><input class="low_stock_threshold" type="number" step="0.01" value="{r['low_stock_threshold']}" style="width:60px;padding:4px;"></td>
             <td style="font-weight:600;color:{sc};font-size:12px;">{format_qty(rs, r['unit'])}</td>
             <td style="white-space:nowrap;">
                 <button onclick="saveItem(this, '{r['id']}')" style="padding:3px 7px;background:#2ecc71;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">保存</button>
@@ -499,8 +485,7 @@ def admin_page():
     
     return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>物资管理</title><style>
     body {{ font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }}
-    .top-links {{ margin-bottom: 15px; }}
-    .top-links a {{ display: inline-block; padding: 8px 16px; background: white; border-radius: 8px; color: #333; text-decoration: none; margin-right: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); font-size: 14px; }}
+    .top-links a {{ display: inline-block; padding: 8px 16px; background: white; border-radius: 8px; color: #333; text-decoration: none; margin-right: 8px; margin-bottom: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); font-size: 14px; }}
     .add-box, .toolbar {{ background: white; padding: 12px; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
     .toolbar input, .toolbar select, .add-box input, .add-box select {{ padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-right: 6px; }}
     .toolbar button, .add-box button {{ padding: 8px 16px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }}
@@ -510,9 +495,7 @@ def admin_page():
     </style><script>
     function saveItem(btn, id) {{ const r = btn.closest('tr');
       const d = {{id, name: r.querySelector('.name').value, brand: r.querySelector('.brand').value,
-        spec: r.querySelector('.spec').value, unit: r.querySelector('.unit').value,
-        sub_unit: r.querySelector('.sub_unit').value, conversion: r.querySelector('.conversion').value,
-        department: r.querySelector('.department').value,
+        unit: r.querySelector('.unit').value, department: r.querySelector('.department').value,
         initial_stock: parseFloat(r.querySelector('.initial_stock').value||'0'),
         low_stock_threshold: parseFloat(r.querySelector('.low_stock_threshold').value||'5')}};
       fetch('/api/admin/update', {{method:'POST',headers:{{'Content-Type':'application/json'}},body: JSON.stringify(d)}})
@@ -523,26 +506,9 @@ def admin_page():
     function adjustStock(id, type) {{ const q = prompt('数量（' + (type==='in'?'入库':'出库') + '）：'); if(!q) return;
       fetch('/api/admin/adjust_stock',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{id, type, quantity: parseFloat(q)}})}})
         .then(x=>x.json()).then(res=>{{alert(res.message); if(res.success) location.reload();}}); }}
-    function addItem() {{ const d = {{name: document.getElementById('n_name').value, brand: document.getElementById('n_brand').value,
-        spec: document.getElementById('n_spec').value, unit: document.getElementById('n_unit').value||'个',
-        department: document.getElementById('n_dept').value,
-        initial_stock: parseFloat(document.getElementById('n_stock').value||'0'),
-        low_stock_threshold: parseFloat(document.getElementById('n_thr').value||'5')}};
-      if(!d.name){{alert('填名称');return;}}
-      fetch('/api/admin/add',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-        .then(x=>x.json()).then(res=>{{alert(res.message); if(res.success) location.reload();}}); }}
     </script></head><body>
     <h1 style="font-size:20px;">🛠️ 物资管理后台</h1>
-    <div class="top-links"><a href="/portal">🏠 导航</a><a href="/inventory">📦 库存</a><a href="/alert">🚨 预警</a><a href="/admin/upload_qrcode">📤 二维码表</a></div>
-    <div class="add-box"><b>➕ 新增</b>
-      <input id="n_name" placeholder="名称" style="width:120px;">
-      <input id="n_brand" placeholder="品牌" style="width:80px;">
-      <input id="n_spec" placeholder="规格" style="width:140px;">
-      <input id="n_unit" placeholder="单位" style="width:50px;">
-      <select id="n_dept"><option>综合部</option><option>工程部</option><option>秩序部</option><option>客服部</option></select>
-      <input id="n_stock" type="number" placeholder="初始库存" style="width:70px;">
-      <input id="n_thr" type="number" placeholder="预警值" style="width:70px;">
-      <button onclick="addItem()">新增</button></div>
+    <div class="top-links"><a href="/portal">🏠 导航</a><a href="/inventory">📦 库存</a><a href="/alert">🚨 预警</a></div>
     <div class="toolbar">
       <form method="get" style="display:inline-flex;gap:6px;align-items:center;">
         <input type="text" name="q" value="{keyword}" placeholder="搜索名称">
@@ -554,57 +520,10 @@ def admin_page():
         <button type="submit">搜索</button>
         <a href="/admin" style="padding:8px 16px;background:#eee;color:#333;border-radius:6px;text-decoration:none;">重置</a>
       </form>
-      <span style="color:#888;font-size:13px;margin-left:12px;">共 {len(rows)} 项（最多显示500条）</span></div>
-    <table><thead><tr><th>名称</th><th>品牌</th><th>规格</th><th>单位</th><th>最小单位</th><th>换算</th><th>部门</th><th>初始库存</th><th>预警值</th><th>当前</th><th>操作</th></tr></thead>
-    <tbody>{rows_html if rows_html else '<tr><td colspan="11" style="text-align:center;padding:40px;color:#888;">暂无</td></tr>'}</tbody></table>
+      <span style="color:#888;font-size:13px;margin-left:12px;">共 {len(rows)} 项</span></div>
+    <table><thead><tr><th>名称</th><th>品牌</th><th>单位</th><th>部门</th><th>初始库存</th><th>预警值</th><th>当前</th><th>操作</th></tr></thead>
+    <tbody>{rows_html if rows_html else '<tr><td colspan="8" style="text-align:center;padding:40px;color:#888;">暂无</td></tr>'}</tbody></table>
     </body></html>'''
-
-@app.route('/admin/upload_qrcode')
-def admin_upload_page():
-    return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>上传草料二维码表</title>
-    <style>body{font-family:-apple-system,sans-serif;background:#f0f2f5;margin:0;padding:15px;}
-    .card{background:white;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.05);max-width:600px;margin:0 auto;}
-    input[type=file]{padding:10px;border:2px dashed #ddd;border-radius:8px;width:100%;box-sizing:border-box;}
-    button{padding:12px 24px;background:#333;color:white;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px;}
-    </style></head><body>
-    <h1>📤 上传草料二维码导出表</h1>
-    <div class="card"><p style="color:#888;font-size:13px;line-height:1.6;">上传草料导出的 CSV，系统按"资产编号"匹配写入二维码短码。</p>
-    <form method="post" action="/api/admin/upload_qrcode" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".csv,.txt" required>
-      <button type="submit">开始上传并匹配</button>
-    </form></div></body></html>'''
-
-@app.route('/api/admin/upload_qrcode', methods=['POST'])
-def upload_qrcode():
-    f = request.files.get('file')
-    if not f: return "<h3>未选择文件</h3>"
-    try: content = f.read().decode('utf-8-sig')
-    except:
-        try: f.seek(0); content = f.read().decode('gbk', errors='ignore')
-        except: content = f.read().decode('utf-8', errors='ignore')
-    reader = csv.DictReader(io.StringIO(content), delimiter='\t')
-    if not reader.fieldnames or len(reader.fieldnames) < 3: reader = csv.DictReader(io.StringIO(content))
-    asset_col = url_col = None
-    for col in reader.fieldnames or []:
-        if '资产编号' in col or '物资编码' in col: asset_col = col
-        if '二维码地址' in col or 'url' in col.lower(): url_col = col
-    if not asset_col or not url_col: return f"<h3>缺少列</h3><p>{reader.fieldnames}</p>"
-    conn = get_db(); success = fail = 0
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            for row in reader:
-                asset = (row.get(asset_col) or '').strip()
-                url = (row.get(url_col) or '').strip()
-                if not asset or not url: continue
-                m = re.search(r'/([^/]+)$', url); qr_code = m.group(1) if m else ''
-                if not qr_code: continue
-                cursor.execute('UPDATE items SET qr_code=%s WHERE asset_code=%s', (qr_code, asset))
-                if cursor.rowcount > 0: success += 1
-                else: fail += 1
-        conn.commit()
-    finally: conn.close()
-    return f'<html><body style="font-family:sans-serif;padding:40px;text-align:center;"><h2>✅ 匹配完成</h2><p>成功 {success} 条，未匹配 {fail} 条</p><a href="/admin">返回</a></body></html>'
 
 @app.route('/api/admin/update', methods=['POST'])
 def admin_update():
@@ -618,11 +537,8 @@ def admin_update():
             cursor.execute('SELECT * FROM items WHERE id=%s', (iid,))
             old = cursor.fetchone()
             if not old: return jsonify({'success': False, 'message': '不存在'})
-            conv = d.get('conversion')
-            conv = float(conv) if conv and str(conv).strip() else None
-            cursor.execute('''UPDATE items SET name=%s, brand=%s, spec=%s, unit=%s, sub_unit=%s, conversion=%s, department=%s, initial_stock=%s, low_stock_threshold=%s WHERE id=%s''',
-                (d.get('name', old['name']), d.get('brand', ''), d.get('spec', ''),
-                 d.get('unit', old['unit']), d.get('sub_unit', '') or None, conv,
+            cursor.execute('''UPDATE items SET name=%s, brand=%s, unit=%s, department=%s, initial_stock=%s, low_stock_threshold=%s WHERE id=%s''',
+                (d.get('name', old['name']), d.get('brand', ''), d.get('unit', old['unit']),
                  d.get('department', old['department']),
                  float(d.get('initial_stock', old['initial_stock'] or 0)),
                  float(d.get('low_stock_threshold', old['low_stock_threshold'] or 5)), iid))
@@ -641,34 +557,10 @@ def admin_soft_delete():
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT name FROM items WHERE id=%s', (iid,))
-            it = cursor.fetchone()
-            if not it: return jsonify({'success': False, 'message': '不存在'})
             cursor.execute('UPDATE items SET is_deleted=1 WHERE id=%s', (iid,))
-            log_audit(cursor, '删除物资', iid, it['name'], '软删除')
+            log_audit(cursor, '删除物资', iid, '', '软删除')
         conn.commit()
         return jsonify({'success': True, 'message': '已删除'})
-    except Exception as e: return jsonify({'success': False, 'message': str(e)})
-    finally: conn.close()
-
-@app.route('/api/admin/add', methods=['POST'])
-def admin_add():
-    d = request.json or {}
-    name = (d.get('name') or '').strip()
-    if not name: return jsonify({'success': False, 'message': '名称不能为空'})
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            key = name + '|' + (d.get('brand') or '') + '|' + (d.get('spec') or '') + '|' + str(datetime.now())
-            iid = hashlib.md5(key.encode()).hexdigest()[:10]
-            dept = normalize_department(d.get('department', '综合部'))
-            cursor.execute('''INSERT INTO items (id,name,brand,spec,unit,department,initial_stock,low_stock_threshold) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)''',
-                (iid, name, d.get('brand', ''), d.get('spec', ''), d.get('unit', '个'), dept,
-                 float(d.get('initial_stock', 0)), float(d.get('low_stock_threshold', 5))))
-            log_audit(cursor, '新增物资', iid, name, f'归属{dept}')
-        conn.commit()
-        return jsonify({'success': True, 'message': f'已新增 {name}'})
     except Exception as e: return jsonify({'success': False, 'message': str(e)})
     finally: conn.close()
 
@@ -685,13 +577,10 @@ def admin_adjust_stock():
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT name FROM items WHERE id=%s', (iid,))
-            it = cursor.fetchone()
-            if not it: return jsonify({'success': False, 'message': '不存在'})
             cursor.execute('INSERT INTO transactions (item_id,type,quantity,note,operator) VALUES (%s,%s,%s,%s,%s)',
                            (iid, typ, qty, '后台调整', '管理员'))
             lb = '入库' if typ == 'in' else '出库'
-            log_audit(cursor, f'{lb}调整', iid, it['name'], f'{lb}{qty}')
+            log_audit(cursor, f'{lb}调整', iid, '', f'{lb}{qty}')
         conn.commit()
         return jsonify({'success': True, 'message': f'已{lb} {qty}'})
     except Exception as e: return jsonify({'success': False, 'message': str(e)})
@@ -734,7 +623,6 @@ def webhook_grass():
                     unit = fields.get('单选项', '个')
                     cursor.execute('INSERT INTO items (id,name,unit,initial_stock,low_stock_threshold,qr_code) VALUES (%s,%s,%s,0,5,%s)',
                                    (item_id, item_name, unit, qr_code))
-                    log_audit(cursor, '新增物资', item_id, item_name, f'扫码自动创建 qr_code={qr_code}')
                 cursor.execute('INSERT INTO transactions (item_id,type,quantity,department,note) VALUES (%s,%s,%s,%s,%s)',
                                (item_id, trans_type, float(quantity), department, f'草料同步-{form_name}'))
             conn.commit()
@@ -744,7 +632,6 @@ def webhook_grass():
         logging.error(f"处理失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# ============ 导入采购计划表（分批提交，防超时） ============
 @app.route('/api/import_plan')
 def import_plan():
     import pandas as pd
@@ -755,19 +642,14 @@ def import_plan():
             cursor.execute('DELETE FROM transactions')
             cursor.execute('DELETE FROM items')
             conn.commit()
-        
         df = pd.read_excel('plan.xlsx', header=1)
         df.columns = [str(c).replace('<br>', '').replace('\n', '').strip() for c in df.columns]
-        
         name_col = next((c for c in df.columns if '物品名称' in c or '物资名称' in c), None)
         brand_col = next((c for c in df.columns if c == '品牌' or '品牌' in c), None)
         spec_col = next((c for c in df.columns if '规格' in c), None)
         unit_col = next((c for c in df.columns if c == '单位' or '计量单位' in c), None)
         dept_col = next((c for c in df.columns if c == '部门' or '申采部门' in c), None)
-        
-        if not name_col:
-            return f"导入失败：未找到'采购物品名称'列。实际列名：{list(df.columns)}"
-        
+        if not name_col: return f"导入失败：未找到'采购物品名称'列。实际列名：{list(df.columns)}"
         unique = {}
         for idx, row in df.iterrows():
             name = str(row.get(name_col) or '').replace('\n', '').strip()
@@ -779,7 +661,6 @@ def import_plan():
             unit = str(row.get(unit_col) or '').replace('\n', '').strip() if unit_col else '个'
             if unit == 'nan' or not unit: unit = '个'
             dept = str(row.get(dept_col) or '').replace('\n', ' ').replace('<br>', ' ').strip() if dept_col else '综合部'
-            
             key = (name, brand, spec)
             if key not in unique:
                 unique[key] = {'name': name, 'brand': brand, 'spec': spec, 'unit': unit, 'depts': set()}
@@ -788,8 +669,6 @@ def import_plan():
                     d = d.strip()
                     if d and d != 'nan':
                         unique[key]['depts'].add(normalize_department(d))
-        
-        # 分批提交，每50条一次
         count = 0
         batch = []
         for (name, brand, spec), info in unique.items():
@@ -798,7 +677,6 @@ def import_plan():
             dept_str = '、'.join(sorted(info['depts'])) if info['depts'] else '综合部'
             batch.append((iid, name, brand, spec, info['unit'], dept_str))
             count += 1
-            
             if len(batch) >= 50:
                 try:
                     cursor.executemany('''INSERT IGNORE INTO items 
@@ -806,7 +684,6 @@ def import_plan():
                         VALUES (%s,%s,%s,%s,%s,0,5,%s)''', batch)
                     conn.commit()
                 except Exception as e:
-                    logging.warning(f"批次失败，重连重试: {e}")
                     conn.ping(reconnect=True)
                     cursor = conn.cursor()
                     cursor.execute(f"USE {MYSQL_DATABASE}")
@@ -815,7 +692,6 @@ def import_plan():
                         VALUES (%s,%s,%s,%s,%s,0,5,%s)''', batch)
                     conn.commit()
                 batch = []
-        
         if batch:
             try:
                 cursor.executemany('''INSERT IGNORE INTO items 
@@ -830,13 +706,70 @@ def import_plan():
                     (id,name,brand,spec,unit,initial_stock,low_stock_threshold,department)
                     VALUES (%s,%s,%s,%s,%s,0,5,%s)''', batch)
                 conn.commit()
-        
         log_audit(cursor, '批量导入', None, None, f'从采购计划表导入{count}条')
         conn.commit()
-        return f"🎉 成功导入 {count} 条物资！已按名称+品牌+规格去重，初始库存为0。"
+        return f"🎉 成功导入 {count} 条物资！"
     except Exception as e:
         import traceback
         return f"导入失败: {str(e)}<br><pre>{traceback.format_exc()}</pre>"
+    finally:
+        conn.close()
+
+# ============ 新增：查看某部门物资清单 ============
+@app.route('/api/list_dept_items')
+def list_dept_items():
+    dept = request.args.get('dept', '').strip()
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('''SELECT id, name, brand, spec, unit, department 
+                FROM items WHERE is_deleted=0 AND (name LIKE %s OR department LIKE %s) ORDER BY name''',
+                (f'%{dept}%', f'%{dept}%'))
+            rows = cursor.fetchall()
+            lines = ["ID,名称,品牌,规格,单位,部门"]
+            for r in rows:
+                lines.append(f"{r['id']},{r['name']},{r.get('brand') or ''},{(r.get('spec') or '')[:40]},{r['unit']},{r['department'] or ''}")
+            return "\n".join(lines)
+    finally:
+        conn.close()
+
+# ============ 新增：一键设置库存和预警值 ============
+@app.route('/api/setup_stock')
+def setup_stock():
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            results = []
+            
+            # 客服部 - 擦手纸：680包，预警180
+            cursor.execute('''UPDATE items SET initial_stock=680, low_stock_threshold=180, unit='包'
+                WHERE is_deleted=0 AND name LIKE %s''', ('%擦手纸%',))
+            results.append(f"擦手纸: {cursor.rowcount}条")
+            
+            # 客服部 - 大卷纸/卷纸：552卷，预警96
+            cursor.execute('''UPDATE items SET initial_stock=552, low_stock_threshold=96, unit='卷'
+                WHERE is_deleted=0 AND (name LIKE %s OR name LIKE %s)''', ('%大卷纸%', '%卷纸%'))
+            results.append(f"大卷纸: {cursor.rowcount}条")
+            
+            # 客服部 - 坐垫纸：125盒，预警25
+            cursor.execute('''UPDATE items SET initial_stock=125, low_stock_threshold=25, unit='盒'
+                WHERE is_deleted=0 AND name LIKE %s''', ('%坐垫纸%',))
+            results.append(f"坐垫纸: {cursor.rowcount}条")
+            
+            # 秩序部 - 邦固黄黑警示带：10卷，预警5
+            cursor.execute('''UPDATE items SET initial_stock=10, low_stock_threshold=5, unit='卷'
+                WHERE is_deleted=0 AND name LIKE %s AND brand LIKE %s''', ('%警示带%', '%邦固%'))
+            results.append(f"邦固警示带: {cursor.rowcount}条")
+            
+            # 秩序部 - 友安红白警示带：30卷，预警10
+            cursor.execute('''UPDATE items SET initial_stock=30, low_stock_threshold=10, unit='卷'
+                WHERE is_deleted=0 AND name LIKE %s AND brand LIKE %s''', ('%警示带%', '%友安%'))
+            results.append(f"友安警示带: {cursor.rowcount}条")
+            
+        conn.commit()
+        return "✅ 设置完成：<br>" + "<br>".join(results)
     finally:
         conn.close()
 
@@ -877,27 +810,9 @@ def check_alerts():
     ok = send_alert_to_group(msg, list(at_set))
     return f"✅ 已推送，共@ {len(at_set)}人" if ok else "❌ 推送失败"
 
-@app.route('/search_item')
-def search_item():
-    q = request.args.get('q', '').strip()
-    if not q: return "<script>alert('请输入搜索内容');history.back();</script>"
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND name LIKE %s LIMIT 10', (f'%{q}%',))
-            rows = cursor.fetchall()
-            if len(rows) == 1: return f"<script>location.href='/item/{rows[0]['id']}';</script>"
-            if len(rows) == 0: return f"<h2 style='text-align:center;margin-top:80px;font-family:sans-serif;'>没有找到「{q}」<br><br><a href='/portal' style='color:#333;'>返回导航</a></h2>"
-            html = f"<html><head><meta charset='UTF-8'><title>搜索</title><style>body{{font-family:-apple-system,sans-serif;background:#f0f2f5;padding:20px;}}a{{display:block;background:white;padding:14px 18px;margin-bottom:8px;border-radius:10px;color:#333;text-decoration:none;}}</style></head><body><h2>找到 {len(rows)} 条：</h2>"
-            for r in rows: html += f"<a href='/item/{r['id']}'>{r['name']}</a>"
-            html += "<p style='text-align:center;margin-top:20px;'><a href='/portal'>返回导航</a></p></body></html>"
-            return html
-    finally: conn.close()
-
 @app.route('/portal')
 def portal():
-    return '''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>环球梦大厦 · 系统导航</title>
+    return '''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>环球梦大厦 · 导航</title>
     <style>* { box-sizing: border-box; } body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
     .header { display: flex; align-items: center; background: white; padding: 22px 26px; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 20px; }
     .header img { height: 52px; margin-right: 18px; }
@@ -917,7 +832,7 @@ def portal():
     <div class="section"><div class="section-title">📦 库存看板</div>
     <a class="link-item" href="/inventory"><div><div class="label">全局库存</div><div class="desc">综合部+客服部+秩序部</div></div><span>›</span></a>
     <a class="link-item" href="/inventory?dept=综合部"><div><div class="label">综合部库存</div><div class="desc">全部物资</div></div><span>›</span></a>
-    <a class="link-item" href="/inventory?dept=客服部"><div><div class="label">客服部库存</div><div class="desc">擦手纸/坐垫纸/大卷纸</div></div><span>›</span></a>
+    <a class="link-item" href="/inventory?dept=客服部"><div><div class="label">客服部库存</div><div class="desc">擦手纸/卷纸/坐垫纸</div></div><span>›</span></a>
     <a class="link-item" href="/inventory?dept=秩序部"><div><div class="label">秩序部库存</div><div class="desc">警示带</div></div><span>›</span></a>
     </div>
     <div class="section"><div class="section-title">🚨 预警看板</div>
@@ -927,11 +842,11 @@ def portal():
     <a class="link-item" href="/alert?dept=秩序部"><div><div class="label">秩序部预警</div><div class="desc">警示带缺货</div></div><span>›</span></a>
     </div>
     <div class="section"><div class="section-title">🛠️ 管理后台</div>
-    <a class="link-item" href="/admin"><div><div class="label">物资管理</div><div class="desc">改库存/预警值/换算率</div></div><span>›</span></a>
-    <a class="link-item" href="/admin/upload_qrcode"><div><div class="label">上传二维码表</div><div class="desc">同步草料短码</div></div><span>›</span></a>
+    <a class="link-item" href="/admin"><div><div class="label">物资管理</div><div class="desc">改库存/预警值</div></div><span>›</span></a>
     </div>
     <div class="section"><div class="section-title">⚙️ 系统工具</div>
-    <a class="link-item" href="/api/import_plan"><div><div class="label">导入采购计划表</div><div class="desc">按名称+品牌+规格去重</div></div><span>›</span></a>
+    <a class="link-item" href="/api/import_plan"><div><div class="label">导入采购计划表</div><div class="desc">重新导入全部物资</div></div><span>›</span></a>
+    <a class="link-item" href="/api/setup_stock"><div><div class="label">一键设置客服/秩序库存</div><div class="desc">擦手纸680 卷纸552 坐垫纸125 警示带</div></div><span>›</span></a>
     <a class="link-item" href="/api/export_links"><div><div class="label">导出全部物资</div><div class="desc">CSV格式</div></div><span>›</span></a>
     <a class="link-item" href="/api/check_alerts"><div><div class="label">手动触发预警</div><div class="desc">推送到钉钉群</div></div><span>›</span></a>
     </div>
