@@ -203,8 +203,6 @@ BASE_STYLE = '''
     .search-bar button { padding: 12px 24px; background: #333; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; }
 '''
 
-# ================= 页面 =================
-
 @app.route('/')
 def home():
     return "🎉 环球梦大厦库存看板系统运行中！请扫码访问。"
@@ -339,8 +337,6 @@ def dashboard():
     {render_header()}{quick}{search}{body}
     <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
 
-# ================= 管理后台 =================
-
 @app.route('/admin')
 def admin_page():
     keyword = request.args.get('q', '').strip()
@@ -469,7 +465,11 @@ def upload_qrcode():
     try:
         content = f.read().decode('utf-8-sig')
     except:
-        content = f.read().decode('gbk', errors='ignore')
+        try:
+            f.seek(0)
+            content = f.read().decode('gbk', errors='ignore')
+        except:
+            content = f.read().decode('utf-8', errors='ignore')
     
     reader = csv.DictReader(io.StringIO(content), delimiter='\t')
     if not reader.fieldnames or len(reader.fieldnames) < 3:
@@ -539,8 +539,6 @@ def admin_logs():
     <h1>📜 操作日志</h1>
     <table><thead><tr><th>时间</th><th>操作</th><th>物资</th><th>详情</th></tr></thead><tbody>{rows}</tbody></table>
     </body></html>'''
-
-# ================= 管理 API =================
 
 @app.route('/api/admin/update', methods=['POST'])
 def admin_update():
@@ -645,8 +643,6 @@ def admin_adjust_stock():
     finally:
         conn.close()
 
-# ================= Webhook：用 qr_code 匹配 =================
-
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
     data = request.json
@@ -658,7 +654,7 @@ def webhook_grass():
         fields = ref_data.get('fields', {})
         ref_qr = data.get('data', {}).get('ref_qrcode', {})
         
-        qr_code = ref_qr.get('code') or ''    # 🌟 二维码唯一编号
+        qr_code = ref_qr.get('code') or ''
         item_name = ref_qr.get('fields', {}).get('资产名称') or ref_qr.get('name')
         
         if not item_name: return jsonify({'status': 'error', 'message': '未找到物资名称'}), 400
@@ -670,27 +666,24 @@ def webhook_grass():
         elif '入库' in form_name:
             trans_type = 'in'; quantity = fields.get('入库数量')
         else:
-            return jsonify({'status': 'error', 'message': f'未知表单'}), 400
+            return jsonify({'status': 'error', 'message': '未知表单'}), 400
         if not quantity: return jsonify({'status': 'error', 'message': '未找到数量'}), 400
         
         conn = get_db()
         try:
             with conn.cursor() as cursor:
                 cursor.execute(f"USE {MYSQL_DATABASE}")
-                # 🌟 第一优先：按 qr_code 精确匹配
                 item_id = None
                 if qr_code:
                     cursor.execute('SELECT id FROM items WHERE qr_code=%s AND is_deleted=0', (qr_code,))
                     row = cursor.fetchone()
                     if row: item_id = row['id']
-                # 第二优先：按名字匹配
                 if not item_id:
                     cursor.execute('SELECT id FROM items WHERE name=%s AND is_deleted=0', (item_name,))
                     row = cursor.fetchone()
                     if row: item_id = row['id']
-                # 兜底：自动创建
                 if not item_id:
-                    item_id = generate_item_id(item_name)
+                    item_id = generate_item_id(item_name + str(datetime.now()))
                     unit = fields.get('单选项', '个')
                     cursor.execute('INSERT INTO items (id,name,unit,initial_stock,low_stock_threshold,qr_code) VALUES (%s,%s,%s,0,5,%s)',
                                    (item_id, item_name, unit, qr_code))
@@ -705,8 +698,6 @@ def webhook_grass():
     except Exception as e:
         logging.error(f"处理失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
-# ================= 重新导入（按物资编码，不再加括号） =================
 
 @app.route('/api/init_data')
 def init_data():
@@ -731,7 +722,6 @@ def init_data():
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row.get('计量单位')) else '个'
                 try: stock = int(float(row['数量'])) if pd.notna(row.get('数量')) else 0
                 except: stock = 0
-                # 用物资编码生成唯一ID，同编码只保留一条
                 item_id = hashlib.md5(asset_code.encode()).hexdigest()[:10]
                 cursor.execute('''REPLACE INTO items 
                     (id,name,unit,initial_stock,low_stock_threshold,department,asset_code)
