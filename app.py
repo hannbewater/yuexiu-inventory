@@ -7,7 +7,6 @@ import re
 import requests
 from datetime import datetime, timedelta
 
-# ================= 配置日志 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 
@@ -18,35 +17,32 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "inventory_db")
 
 # ================= 部门名称归一化 =================
-DEPT_ALIAS = {
-    '安管部': '秩序部',
-}
+DEPT_ALIAS = {'安管部': '秩序部'}
 def normalize_department(dept):
-    if not dept:
-        return dept
-    dept = str(dept).strip()
-    return DEPT_ALIAS.get(dept, dept)
+    if not dept: return dept
+    return DEPT_ALIAS.get(str(dept).strip(), str(dept).strip())
 
 # ================= 钉钉统一预警群配置 =================
-# 所有部门的预警都发到这一个群
 ALERT_WEBHOOK = 'https://oapi.dingtalk.com/robot/send?access_token=2b99041269aa1070355657d9060ae29ef6c064cfeb3b2565f0c2b0ac6877d6c1'
-
-# 部门 -> 负责人手机号（钉钉 @ 人用手机号）
 DEPT_CONTACTS = {
     '综合部': ['19874467403'],
     '工程部': ['18666082342'],
-    '秩序部': ['19874467403'],   # 安管部已归一化为秩序部
+    '秩序部': ['19874467403'],
     '客服部': ['18666082342'],
 }
 
 def get_db():
+    """获取数据库连接，带自动重连和超时设置"""
     conn = pymysql.connect(
         host=MYSQL_ADDRESS.split(":")[0] if MYSQL_ADDRESS else "127.0.0.1",
         port=int(MYSQL_ADDRESS.split(":")[1]) if MYSQL_ADDRESS and ":" in MYSQL_ADDRESS else 3306,
         user=MYSQL_USERNAME,
         password=MYSQL_PASSWORD,
         cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True
+        autocommit=True,
+        connect_timeout=10,
+        read_timeout=30,
+        write_timeout=30
     )
     conn.ping(reconnect=True)
     return conn
@@ -102,57 +98,55 @@ def generate_item_id(name):
 
 init_db()
 
-# ================= 工具函数 =================
-def calc_stock(cursor, item):
-    cursor.execute('''
-        SELECT 
-            COALESCE(SUM(CASE WHEN type = 'in' THEN quantity ELSE 0 END), 0) AS total_in,
-            COALESCE(SUM(CASE WHEN type = 'out' THEN quantity ELSE 0 END), 0) AS total_out
-        FROM transactions WHERE item_id = %s
-    ''', (item['id'],))
-    stats = cursor.fetchone()
-    real_stock = item['initial_stock'] + stats['total_in'] - stats['total_out']
-    return {
-        'id': item['id'],
-        'name': re.sub(r'\(\d+\)$', '', item['name']),
-        'unit': item['unit'],
-        'real_stock': real_stock,
-        'total_in': stats['total_in'],
-        'total_out': stats['total_out'],
-        'threshold': item['low_stock_threshold'],
-        'department': normalize_department(item.get('department')) or '未分配',
-        'is_low': real_stock <= item['low_stock_threshold']
-    }
+# ================= 核心：一次查询取回所有物资库存 =================
+def get_all_items_with_stock():
+    """一次性 JOIN 查询，避免对391个物资逐个查询导致连接断开"""
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('''
+                SELECT 
+                    i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department,
+                    COALESCE(SUM(CASE WHEN t.type = 'in' THEN t.quantity ELSE 0 END), 0) AS total_in,
+                    COALESCE(SUM(CASE WHEN t.type = 'out' THEN t.quantity ELSE 0 END), 0) AS total_out
+                FROM items i
+                LEFT JOIN transactions t ON i.id = t.item_id
+                GROUP BY i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department
+            ''')
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                real_stock = row['initial_stock'] + row['total_in'] - row['total_out']
+                result.append({
+                    'id': row['id'],
+                    'name': re.sub(r'\(\d+\)$', '', row['name']),
+                    'unit': row['unit'],
+                    'real_stock': real_stock,
+                    'total_in': row['total_in'],
+                    'total_out': row['total_out'],
+                    'threshold': row['low_stock_threshold'],
+                    'department': normalize_department(row.get('department')) or '未分配',
+                    'is_low': real_stock <= row['low_stock_threshold']
+                })
+            return result
+    finally:
+        conn.close()
 
 def send_alert_to_group(message, at_mobiles):
-    """向统一预警群发送 markdown 消息，并 @ 指定人员"""
     if not ALERT_WEBHOOK:
-        logging.warning("未配置钉钉预警 Webhook，跳过推送")
         return False
-    
     at_text = " ".join([f"@{m}" for m in at_mobiles]) if at_mobiles else ""
     full_content = f"{message}\n\n{at_text}" if at_text else message
-    
     data = {
         "msgtype": "markdown",
-        "markdown": {
-            "title": "库存预警",
-            "text": full_content
-        },
-        "at": {
-            "atMobiles": at_mobiles,
-            "isAtAll": False
-        }
+        "markdown": {"title": "库存预警", "text": full_content},
+        "at": {"atMobiles": at_mobiles, "isAtAll": False}
     }
     headers = {'Content-Type': 'application/json;charset=utf-8'}
     try:
         resp = requests.post(ALERT_WEBHOOK, json=data, headers=headers, timeout=5)
-        if resp.status_code == 200 and resp.json().get('errcode') == 0:
-            logging.info("成功推送预警到钉钉群")
-            return True
-        else:
-            logging.error(f"钉钉推送失败: {resp.text}")
-            return False
+        return resp.status_code == 200 and resp.json().get('errcode') == 0
     except Exception as e:
         logging.error(f"钉钉推送异常: {e}")
         return False
@@ -175,7 +169,6 @@ BASE_STYLE = '''
     .main-header .title-block { flex: 1; }
     .main-header .project-name { font-size: 24px; font-weight: 800; color: #1a1a1a; letter-spacing: 2px; line-height: 1.2; }
     .main-header .sub-title { font-size: 12px; color: #999; margin-top: 4px; letter-spacing: 4px; }
-
     .section-title { font-size: 16px; font-weight: 700; color: #333; margin: 24px 0 12px 0; }
     .section-title span { background: #e74c3c; color: white; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: normal; }
     .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
@@ -197,13 +190,11 @@ BASE_STYLE = '''
     .quick-links { text-align: center; margin: 15px 0; }
     .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
     .quick-links a.active { background: #333; color: white; }
-
     .view-tabs { display: flex; gap: 6px; margin-bottom: 16px; background: white; padding: 6px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     .view-tabs a { flex: 1; text-align: center; padding: 12px; border-radius: 8px; text-decoration: none; color: #666; font-size: 14px; font-weight: 600; transition: all 0.2s; }
     .view-tabs a.active { background: #333; color: white; }
     .view-tabs a .hint { display: block; font-size: 11px; font-weight: 400; opacity: 0.7; margin-top: 2px; letter-spacing: 1px; }
     .view-tabs a.active .hint { opacity: 0.85; }
-
     .search-bar { display: flex; gap: 8px; margin: 15px 0; }
     .search-bar input[type="text"] { flex: 1; padding: 12px 16px; border: 1px solid #ddd; border-radius: 10px; font-size: 15px; outline: none; }
     .search-bar input[type="text"]:focus { border-color: #333; }
@@ -227,15 +218,11 @@ def render_low_stock_html(items):
 def render_view_tabs(current_view, dept, query):
     def build_url(view):
         params = [f"view={view}"]
-        if dept:
-            params.append(f"dept={dept}")
-        if query:
-            params.append(f"q={query}")
+        if dept: params.append(f"dept={dept}")
+        if query: params.append(f"q={query}")
         return "/dashboard?" + "&".join(params)
-    
     common_active = 'active' if current_view == 'common' else ''
     all_active = 'active' if current_view == 'all' else ''
-    
     return f'''
     <div class="view-tabs">
         <a href="{build_url('common')}" class="{common_active}">常用消耗物资看板<span class="hint">重点关注 · 待配置</span></a>
@@ -255,11 +242,31 @@ def item_page(item_id):
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT * FROM items WHERE id = %s', (item_id,))
-            item = cursor.fetchone()
-            if not item:
+            cursor.execute('''
+                SELECT 
+                    i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department,
+                    COALESCE(SUM(CASE WHEN t.type = 'in' THEN t.quantity ELSE 0 END), 0) AS total_in,
+                    COALESCE(SUM(CASE WHEN t.type = 'out' THEN t.quantity ELSE 0 END), 0) AS total_out
+                FROM items i
+                LEFT JOIN transactions t ON i.id = t.item_id
+                WHERE i.id = %s
+                GROUP BY i.id, i.name, i.unit, i.initial_stock, i.low_stock_threshold, i.department
+            ''', (item_id,))
+            row = cursor.fetchone()
+            if not row:
                 return "<h2 style='text-align:center;margin-top:50px;'>物资不存在</h2>", 404
-            data = calc_stock(cursor, item)
+            real_stock = row['initial_stock'] + row['total_in'] - row['total_out']
+            data = {
+                'id': row['id'],
+                'name': re.sub(r'\(\d+\)$', '', row['name']),
+                'unit': row['unit'],
+                'real_stock': real_stock,
+                'total_in': row['total_in'],
+                'total_out': row['total_out'],
+                'threshold': row['low_stock_threshold'],
+                'department': normalize_department(row.get('department')) or '未分配',
+                'is_low': real_stock <= row['low_stock_threshold']
+            }
     finally:
         conn.close()
 
@@ -309,26 +316,24 @@ def dashboard():
     dept = normalize_department(request.args.get('dept', '').strip())
     query = request.args.get('q', '').strip()
     view = request.args.get('view', 'all').strip()
-    if view not in ['common', 'all']:
-        view = 'all'
+    if view not in ['common', 'all']: view = 'all'
     
+    # 🌟 一次性取出所有物资库存（避免N次查询断开连接）
+    all_items_data = get_all_items_with_stock()
+    all_low = [d for d in all_items_data if d['is_low']]
+    all_low.sort(key=lambda x: x['real_stock'])
+    
+    search_results = None
+    if query:
+        search_results = [d for d in all_items_data if query.lower() in d['name'].lower()]
+        search_results.sort(key=lambda x: x['name'])
+    
+    # 部门相关数据
     conn = get_db()
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT * FROM items')
-            items = cursor.fetchall()
-            all_items_data = [calc_stock(cursor, item) for item in items]
-            all_low = [d for d in all_items_data if d['is_low']]
-            all_low.sort(key=lambda x: x['real_stock'])
-            
-            search_results = None
-            if query:
-                search_results = [d for d in all_items_data if query.lower() in d['name'].lower()]
-                search_results.sort(key=lambda x: x['name'])
-            
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
-            
             if dept:
                 my_low = [d for d in all_low if d['department'] == dept]
                 cursor.execute('''
@@ -398,15 +403,9 @@ def dashboard():
                     <div class="stock" style="color:{status_color};">{item['real_stock']} {item['unit']}</div>
                 </div>
                 '''
-            search_html = f'''
-            <div class="section-title">🔍 搜索结果："{query}"<span>{len(search_results)} 项</span></div>
-            <div class="scroll-card">{rows}</div>
-            '''
+            search_html = f'''<div class="section-title">🔍 搜索结果："{query}"<span>{len(search_results)} 项</span></div><div class="scroll-card">{rows}</div>'''
         else:
-            search_html = f'''
-            <div class="section-title">🔍 搜索结果："{query}"<span>0 项</span></div>
-            <div class="card" style="text-align:center;color:#888;padding:20px;">没有找到匹配的物资</div>
-            '''
+            search_html = f'''<div class="section-title">🔍 搜索结果："{query}"<span>0 项</span></div><div class="card" style="text-align:center;color:#888;padding:20px;">没有找到匹配的物资</div>'''
 
     view_label = "常用消耗物资看板" if view == 'common' else "全物资看板"
 
@@ -415,87 +414,32 @@ def dashboard():
         if not usage_rows:
             usage_rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无领用记录</td></tr>'
         html = f'''
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            <title>{dept} · {view_label}</title>
-            <style>{BASE_STYLE}</style>
-        </head>
-        <body>
-            {render_header()}
-            {view_tabs}
-            {quick_links}
-            {search_bar}
-            {search_html}
-            <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div>
-            <div class="scroll-card">{render_low_stock_html(my_low)}</div>
-            <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div>
-            <div class="scroll-card">{render_low_stock_html(all_low)}</div>
+        <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>{dept} · {view_label}</title><style>{BASE_STYLE}</style></head><body>
+            {render_header()}{view_tabs}{quick_links}{search_bar}{search_html}
+            <div class="section-title">🚨 本部门物资预警<span>{len(my_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(my_low)}</div>
+            <div class="section-title" style="margin-top:24px;">📦 全部物资预警（含其他部门）<span>{len(all_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(all_low)}</div>
             <div class="section-title" style="margin-top:24px;">📊 {dept}近30天领用记录</div>
-            <div class="scroll-card">
-                <table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead>
-                <tbody>{usage_rows}</tbody></table>
-            </div>
+            <div class="scroll-card"><table><thead><tr><th>物资</th><th style="text-align:right;">领用量</th></tr></thead><tbody>{usage_rows}</tbody></table></div>
             <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
-        </body>
-        </html>
-        '''
+        </body></html>'''
     else:
         dept_html = ''
         if dept_dict:
             for d, usages in dept_dict.items():
                 rows = ''.join([f'<tr><td>{u["name"]}</td><td class="num">{u["qty"]} {u["unit"]}</td></tr>' for u in usages])
-                dept_html += f'''
-                <div class="scroll-card" style="margin-bottom: 12px;">
-                    <div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}</div>
-                    <table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead>
-                    <tbody>{rows}</tbody></table>
-                </div>
-                '''
+                dept_html += f'''<div class="scroll-card" style="margin-bottom: 12px;"><div style="font-weight:700; font-size:15px; margin-bottom:10px;">📁 {d}</div><table><thead><tr><th>物资</th><th style="text-align:right;">近30天领用</th></tr></thead><tbody>{rows}</tbody></table></div>'''
         if not dept_html:
             dept_html = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无部门领用记录</div>'
         html = f'''
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            <title>环球梦大厦 · {view_label}</title>
-            <style>{BASE_STYLE}</style>
-        </head>
-        <body>
-            {render_header()}
-            {view_tabs}
-            {quick_links}
-            {search_bar}
-            {search_html}
-            <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div>
-            <div class="scroll-card">{render_low_stock_html(all_low)}</div>
-            <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>
-            {dept_html}
+        <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>环球梦大厦 · {view_label}</title><style>{BASE_STYLE}</style></head><body>
+            {render_header()}{view_tabs}{quick_links}{search_bar}{search_html}
+            <div class="section-title">🚨 全部库存预警<span>{len(all_low)} 项</span></div><div class="scroll-card">{render_low_stock_html(all_low)}</div>
+            <div class="section-title" style="margin-top:30px;">📊 各部门近30天领用统计</div>{dept_html}
             <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
-        </body>
-        </html>
-        '''
+        </body></html>'''
     return html
 
 # ================= API 接口 =================
-
-@app.route('/api/item/<item_id>')
-def api_item(item_id):
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT * FROM items WHERE id = %s', (item_id,))
-            item = cursor.fetchone()
-            if not item:
-                return jsonify({'error': '物资不存在'}), 404
-            return jsonify(calc_stock(cursor, item))
-    finally:
-        conn.close()
 
 @app.route('/api/webhook/grass', methods=['POST'])
 def webhook_grass():
@@ -514,16 +458,13 @@ def webhook_grass():
         department = fields.get('所属部门') or fields.get('领用部门') or fields.get('部门')
         department = normalize_department(department)
         if '出库' in form_name:
-            trans_type = 'out'
-            quantity = fields.get('出库数量')
+            trans_type = 'out'; quantity = fields.get('出库数量')
         elif '入库' in form_name:
-            trans_type = 'in'
-            quantity = fields.get('入库数量')
+            trans_type = 'in'; quantity = fields.get('入库数量')
         else:
             return jsonify({'status': 'error', 'message': f'未知的表单类型: {form_name}'}), 400
         if not quantity:
             return jsonify({'status': 'error', 'message': '未在表单中找到数量'}), 400
-
         conn = get_db()
         try:
             with conn.cursor() as cursor:
@@ -531,19 +472,12 @@ def webhook_grass():
                 cursor.execute('SELECT id FROM items WHERE name = %s', (item_name,))
                 item = cursor.fetchone()
                 if not item:
-                    logging.warning(f"数据库中不存在物资 [{item_name}]，尝试自动创建...")
                     item_id = generate_item_id(item_name)
                     unit = fields.get('单选项', '个')
-                    cursor.execute('''
-                        INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold) 
-                        VALUES (%s, %s, %s, 0, 5)
-                    ''', (item_id, item_name, unit))
+                    cursor.execute('INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold) VALUES (%s, %s, %s, 0, 5)', (item_id, item_name, unit))
                 else:
                     item_id = item['id']
-                cursor.execute('''
-                    INSERT INTO transactions (item_id, type, quantity, department, note) 
-                    VALUES (%s, %s, %s, %s, %s)
-                ''', (item_id, trans_type, int(quantity), department, f'草料同步-{form_name}'))
+                cursor.execute('INSERT INTO transactions (item_id, type, quantity, department, note) VALUES (%s, %s, %s, %s, %s)', (item_id, trans_type, int(quantity), department, f'草料同步-{form_name}'))
             conn.commit()
         finally:
             conn.close()
@@ -571,26 +505,19 @@ def init_data():
                 original_name = name
                 suffix = 1
                 while name in imported_names:
-                    name = f"{original_name}({suffix})"
-                    suffix += 1
+                    name = f"{original_name}({suffix})"; suffix += 1
                 imported_names.add(name)
                 dept = str(row['申采部门']).replace('<br>', '').replace('\n', '').strip() if pd.notna(row['申采部门']) else '综合部'
-                if dept == 'nan' or not dept:
-                    dept = '综合部'
+                if dept == 'nan' or not dept: dept = '综合部'
                 dept = normalize_department(dept)
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row['计量单位']) else '个'
-                try:
-                    initial_stock = int(float(row['数量'])) if pd.notna(row['数量']) else 0
-                except:
-                    initial_stock = 0
+                try: initial_stock = int(float(row['数量'])) if pd.notna(row['数量']) else 0
+                except: initial_stock = 0
                 item_id = generate_item_id(name)
-                cursor.execute('''
-                    INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold, department)
-                    VALUES (%s, %s, %s, %s, 5, %s)
-                ''', (item_id, name, unit, initial_stock, dept))
+                cursor.execute('INSERT INTO items (id, name, unit, initial_stock, low_stock_threshold, department) VALUES (%s, %s, %s, %s, 5, %s)', (item_id, name, unit, initial_stock, dept))
                 count += 1
         conn.commit()
-        return f"🎉 成功导入 {count} 种物资！已根据“申采部门”自动分配归属部门（安管部已统一为秩序部）。"
+        return f"🎉 成功导入 {count} 种物资！"
     except Exception as e:
         return f"导入失败: {str(e)}"
     finally:
@@ -616,49 +543,35 @@ def export_links():
 
 @app.route('/api/check_alerts')
 def check_alerts():
-    """扫描所有部门缺货，汇总成一条消息发到统一预警群，@ 对应负责人"""
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT DISTINCT department FROM items WHERE department IS NOT NULL')
-            depts = cursor.fetchall()
-            
-            all_depts_low = {}
-            at_mobiles_set = set()
-            
-            for dept_row in depts:
-                dept = normalize_department(dept_row['department'])
-                cursor.execute('SELECT * FROM items WHERE department = %s', (dept,))
-                items = cursor.fetchall()
-                
-                low_items = []
-                for item in items:
-                    data = calc_stock(cursor, item)
-                    if data['is_low']:
-                        low_items.append(f"> {data['name']}：剩余 **{data['real_stock']}** {data['unit']}（阈值 {data['threshold']}）")
-                
-                if low_items:
-                    all_depts_low[dept] = low_items
-                    for phone in DEPT_CONTACTS.get(dept, []):
-                        at_mobiles_set.add(phone)
-    finally:
-        conn.close()
+    """一次性取出所有物资，扫描缺货，汇总推送"""
+    all_items_data = get_all_items_with_stock()
+    all_low = [d for d in all_items_data if d['is_low']]
     
-    if not all_depts_low:
+    if not all_low:
         return "✅ 所有部门物资库存充足，无需推送"
+    
+    # 按部门分组
+    all_depts_low = {}
+    for item in all_low:
+        dept = item['department']
+        all_depts_low.setdefault(dept, []).append(item)
+    
+    at_mobiles_set = set()
+    for dept in all_depts_low.keys():
+        for phone in DEPT_CONTACTS.get(dept, []):
+            at_mobiles_set.add(phone)
     
     lines = ["#### 🚨 环球梦大厦 · 库存预警", ""]
     lines.append(f"**共 {len(all_depts_low)} 个部门有物资缺货，请及时采购：**")
     lines.append("")
-    for dept, low_items in all_depts_low.items():
+    for dept, items in all_depts_low.items():
         lines.append(f"**【{dept}】**")
-        lines.extend(low_items)
+        for item in items:
+            lines.append(f"> {item['name']}：剩余 **{item['real_stock']}** {item['unit']}（阈值 {item['threshold']}）")
         lines.append("")
     
     message = "\n".join(lines)
     at_mobiles = list(at_mobiles_set)
-    
     success = send_alert_to_group(message, at_mobiles)
     
     if success:
