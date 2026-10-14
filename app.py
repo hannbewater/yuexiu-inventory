@@ -205,41 +205,278 @@ def send_alert_to_group(message, at_mobiles):
 def render_header():
     return '''
     <div class="main-header">
-        <img src="/static/logo.png" class="logo" alt="越秀服务" onerror="this.style.display='none'">
-        <div class="title-block">
-            <div class="project-name">环球梦大厦</div>
-            <div class="sub-title">物资库存预警看板</div>
+        <div class="header-left">
+            <img src="/static/logo.png" class="logo" alt="越秀服务" onerror="this.style.display='none'">
+            <div class="title-block">
+                <div class="project-name">环球梦大厦</div>
+                <div class="sub-title">物资库存预警看板</div>
+            </div>
+        </div>
+        <div class="header-right">
+            <a href="/portal" class="header-btn">🏠 导航</a>
+            <a href="/admin" class="header-btn">⚙️ 管理</a>
         </div>
     </div>
     '''
 
 BASE_STYLE = '''
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }
-    .main-header { display: flex; align-items: center; background: linear-gradient(135deg, #fff, #f8fafc); padding: 18px 22px; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 16px; }
-    .main-header .logo { height: 46px; margin-right: 16px; }
-    .project-name { font-size: 24px; font-weight: 800; color: #1a1a1a; letter-spacing: 2px; }
-    .sub-title { font-size: 12px; color: #999; margin-top: 4px; letter-spacing: 4px; }
-    .section-title { font-size: 16px; font-weight: 700; color: #333; margin: 24px 0 12px; }
-    .section-title span { background: #e74c3c; color: white; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
-    .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-    .scroll-card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); max-height: 400px; overflow-y: auto; }
-    .low-item { background: #fff5f5; border-left: 4px solid #e74c3c; padding: 12px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
-    .low-item .name { font-weight: 600; color: #333; }
-    .low-item .meta { color: #888; font-size: 12px; margin-left: 8px; }
-    .low-item .stock { color: #e74c3c; font-weight: 700; font-size: 18px; }
-    .ok-msg { text-align: center; color: #2ecc71; padding: 20px; font-weight: 600; }
+    :root {
+        --brand: #FF6B1A;
+        --brand-dark: #E85A0E;
+        --ink: #1a1f2e;
+        --ink-light: #5a6172;
+        --ink-lighter: #8a91a0;
+        --bg: #f5f7fa;
+        --card: #ffffff;
+        --border: #e8ecf1;
+        --danger: #e74c3c;
+        --success: #2ecc71;
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC", "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        margin: 0;
+        padding: 16px;
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+    }
+    .main-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: linear-gradient(135deg, #1a1f2e 0%, #252b3d 100%);
+        padding: 18px 24px;
+        border-radius: 18px;
+        box-shadow: 0 8px 32px rgba(26, 31, 46, 0.18);
+        margin-bottom: 20px;
+        position: relative;
+        overflow: hidden;
+    }
+    .main-header::after {
+        content: '';
+        position: absolute;
+        top: -50%;
+        right: -10%;
+        width: 280px;
+        height: 280px;
+        background: radial-gradient(circle, rgba(255, 107, 26, 0.15) 0%, transparent 70%);
+        pointer-events: none;
+    }
+    .main-header .header-left { display: flex; align-items: center; z-index: 1; }
+    .main-header .logo {
+        height: 44px;
+        margin-right: 16px;
+        background: white;
+        padding: 6px 10px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .main-header .project-name {
+        font-size: 22px;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: 3px;
+        line-height: 1.2;
+    }
+    .main-header .sub-title {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.55);
+        margin-top: 4px;
+        letter-spacing: 4px;
+    }
+    .main-header .header-right { display: flex; gap: 8px; z-index: 1; }
+    .main-header .header-btn {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 14px;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 10px;
+        color: rgba(255,255,255,0.9);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.2s;
+        backdrop-filter: blur(10px);
+    }
+    .main-header .header-btn:hover { background: rgba(255,107,26,0.9); border-color: transparent; }
+
+    .section-title {
+        font-size: 17px;
+        font-weight: 700;
+        color: var(--ink);
+        margin: 26px 0 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .section-title span {
+        background: var(--brand);
+        color: white;
+        font-size: 12px;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-weight: 500;
+    }
+
+    .card {
+        background: var(--card);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 2px 12px rgba(26, 31, 46, 0.05);
+        border: 1px solid var(--border);
+    }
+    .scroll-card {
+        background: var(--card);
+        border-radius: 16px;
+        padding: 8px 16px;
+        box-shadow: 0 2px 12px rgba(26, 31, 46, 0.05);
+        border: 1px solid var(--border);
+        max-height: 420px;
+        overflow-y: auto;
+    }
+    .scroll-card::-webkit-scrollbar { width: 6px; }
+    .scroll-card::-webkit-scrollbar-thumb { background: #d0d6e0; border-radius: 3px; }
+    .scroll-card::-webkit-scrollbar-track { background: transparent; }
+
+    .low-item {
+        background: linear-gradient(90deg, #fff5f5 0%, #ffffff 100%);
+        border-left: 3px solid var(--danger);
+        padding: 14px 16px;
+        margin: 8px 0;
+        border-radius: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all 0.15s;
+    }
+    .low-item:hover { transform: translateX(2px); box-shadow: 0 2px 8px rgba(231, 76, 60, 0.1); }
+    .low-item .name { font-weight: 600; color: var(--ink); font-size: 14px; }
+    .low-item .meta { color: var(--ink-lighter); font-size: 12px; margin-left: 8px; }
+    .low-item .stock { color: var(--danger); font-weight: 700; font-size: 20px; letter-spacing: -0.5px; }
+
+    .ok-msg {
+        text-align: center;
+        color: var(--success);
+        padding: 32px 20px;
+        font-weight: 600;
+        font-size: 15px;
+    }
+
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th { color: #888; text-align: left; padding-bottom: 8px; font-weight: 500; }
-    td { padding: 8px 0; border-bottom: 1px solid #eee; }
-    td.num { text-align: right; color: #333; font-weight: 600; }
-    .footer { text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; padding-bottom: 20px; }
-    .quick-links { text-align: center; margin: 15px 0; }
-    .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
-    .quick-links a.active { background: #333; color: white; }
-    .search-bar { display: flex; gap: 8px; margin: 15px 0; }
-    .search-bar input { flex: 1; padding: 12px 16px; border: 1px solid #ddd; border-radius: 10px; font-size: 15px; outline: none; }
-    .search-bar button { padding: 12px 24px; background: #333; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; }
-    .item-sub { color: #999; font-size: 11px; margin-top: 2px; }
+    th {
+        color: var(--ink-lighter);
+        text-align: left;
+        padding: 12px 8px 10px;
+        font-weight: 500;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        border-bottom: 2px solid var(--border);
+    }
+    td {
+        padding: 12px 8px;
+        border-bottom: 1px solid var(--border);
+        color: var(--ink);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafbfc; }
+    td.num {
+        text-align: right;
+        color: var(--ink);
+        font-weight: 700;
+        font-size: 15px;
+        letter-spacing: -0.3px;
+    }
+
+    .quick-links {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        margin: 16px 0;
+    }
+    .quick-links a {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 16px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        color: var(--ink-light);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.2s;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .quick-links a:hover {
+        border-color: var(--brand);
+        color: var(--brand);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(255, 107, 26, 0.15);
+    }
+    .quick-links a.active {
+        background: var(--brand);
+        color: white;
+        border-color: var(--brand);
+        box-shadow: 0 4px 12px rgba(255, 107, 26, 0.3);
+    }
+
+    .search-bar {
+        display: flex;
+        gap: 8px;
+        margin: 16px 0;
+    }
+    .search-bar input {
+        flex: 1;
+        padding: 14px 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        font-size: 15px;
+        outline: none;
+        background: var(--card);
+        transition: all 0.2s;
+        color: var(--ink);
+    }
+    .search-bar input:focus {
+        border-color: var(--brand);
+        box-shadow: 0 0 0 3px rgba(255, 107, 26, 0.1);
+    }
+    .search-bar button {
+        padding: 14px 28px;
+        background: var(--brand);
+        color: white;
+        border: none;
+        border-radius: 12px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 4px 12px rgba(255, 107, 26, 0.25);
+    }
+    .search-bar button:hover {
+        background: var(--brand-dark);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(255, 107, 26, 0.35);
+    }
+
+    .item-sub {
+        color: var(--ink-lighter);
+        font-size: 11px;
+        margin-top: 3px;
+        line-height: 1.3;
+    }
+
+    .footer {
+        text-align: center;
+        color: var(--ink-lighter);
+        font-size: 12px;
+        margin-top: 40px;
+        padding-bottom: 24px;
+        letter-spacing: 1px;
+    }
 '''
 
 @app.route('/')
@@ -284,7 +521,7 @@ def inventory():
             sub = f'{item["brand"]} {item["spec"]}'.strip()
             sub_html = f'<div class="item-sub">{sub}</div>' if sub else ''
             rows += f'''<tr>
-                <td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>{sub_html}</td>
+                <td><a href="/item/{item["id"]}/history" style="color:#1a1f2e;text-decoration:none;">{item["name"]}</a>{sub_html}</td>
                 <td class="num">{format_qty(item["real_stock"], item["unit"], item["sub_unit"], item["conversion"])}</td>
             </tr>'''
         return f'<table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table>'
@@ -294,15 +531,15 @@ def inventory():
         if my_items:
             body = f'<div class="section-title">📦 {dept}库存清单<span>{len(my_items)} 项</span></div><div class="scroll-card">{render_table(my_items)}</div>'
         else:
-            body = f'<div class="card" style="text-align:center;color:#888;padding:20px;">{dept}暂无有库存的物资</div>'
+            body = f'<div class="card" style="text-align:center;color:#8a91a0;padding:40px;">{dept}暂无有库存的物资</div>'
     else:
         if dept_dict:
             total = sum(len(v) for v in dept_dict.values())
             body = f'<div class="section-title">📦 各部门库存总览<span>{total} 项</span></div>'
             for d, items in dept_dict.items():
-                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;">📁 {d}（{len(items)} 项）</div>{render_table(items)}</div>'
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;padding:8px 0;">📁 {d}（{len(items)} 项）</div>{render_table(items)}</div>'
         else:
-            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无有库存的物资</div>'
+            body = '<div class="card" style="text-align:center;color:#8a91a0;padding:40px;">暂无有库存的物资</div>'
     
     return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>库存看板 · 环球梦大厦</title><style>{BASE_STYLE}</style></head><body>
     {render_header()}{quick}{search}{body}
@@ -355,7 +592,7 @@ def alert_dashboard():
             total = sum(len(v) for v in dept_low.values())
             body = f'<div class="section-title">🚨 全部预警物资<span>{total} 项</span></div>'
             for d, items in dept_low.items():
-                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;color:#e74c3c;">📁 {d}（{len(items)} 项）</div>{render_low(items)}</div>'
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;padding:8px 0;color:#e74c3c;">📁 {d}（{len(items)} 项）</div>{render_low(items)}</div>'
         else:
             body = '<div class="card ok-msg">✅ 所有物资库存充足，无预警</div>'
     
@@ -387,22 +624,22 @@ def item_page(item_id):
     c = '#e74c3c' if data['is_low'] else '#2ecc71'
     sub = f'{data["brand"]} {data["spec"]}'.strip()
     return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>{data['name']}</title><style>{BASE_STYLE}
-    .item-card {{ background: white; border-radius: 16px; padding: 24px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 16px; text-align: center; }}
-    .item-name {{ font-size: 22px; font-weight: 700; color: #333; margin-bottom: 8px; }}
-    .item-subtitle {{ color: #999; font-size: 12px; margin-bottom: 12px; }}
-    .label {{ font-size: 14px; color: #888; margin-bottom: 8px; }}
-    .stock-number {{ font-size: 56px; font-weight: 800; color: {c}; line-height: 1.1; margin: 10px 0; }}
-    .warning {{ background: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 10px 16px; border-radius: 10px; margin-top: 15px; font-size: 14px; font-weight: 600; display: inline-block; }}
-    .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
-    .stat-box {{ background: white; border-radius: 16px; padding: 20px; text-align: center; box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
-    .stat-value {{ font-size: 24px; font-weight: 700; margin-top: 8px; }}
+    .item-card {{ background: white; border-radius: 20px; padding: 32px 24px; box-shadow: 0 4px 24px rgba(26,31,46,0.06); border: 1px solid #e8ecf1; margin-bottom: 16px; text-align: center; }}
+    .item-name {{ font-size: 24px; font-weight: 800; color: #1a1f2e; margin-bottom: 8px; letter-spacing: -0.5px; }}
+    .item-subtitle {{ color: #8a91a0; font-size: 13px; margin-bottom: 20px; }}
+    .label {{ font-size: 13px; color: #8a91a0; margin-bottom: 12px; letter-spacing: 1px; }}
+    .stock-number {{ font-size: 72px; font-weight: 800; color: {c}; line-height: 1; margin: 8px 0; letter-spacing: -3px; }}
+    .warning {{ background: linear-gradient(90deg, #fff3cd 0%, #ffffff 100%); border-left: 4px solid #ffc107; color: #856404; padding: 12px 18px; border-radius: 10px; margin-top: 20px; font-size: 14px; font-weight: 600; display: inline-block; }}
+    .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    .stat-box {{ background: white; border-radius: 18px; padding: 22px; text-align: center; box-shadow: 0 2px 12px rgba(26,31,46,0.05); border: 1px solid #e8ecf1; }}
+    .stat-value {{ font-size: 26px; font-weight: 800; margin-top: 10px; letter-spacing: -0.5px; }}
     </style></head><body>
     {render_header()}
     <div class="item-card"><div class="item-name">{data['name']}</div>
     <div class="item-subtitle">{sub}</div>
     <div class="label">实时库存</div>
     <div class="stock-number">{format_qty(data['real_stock'], data['unit'])}</div>
-    {f'<div style="color:#999;font-size:14px;margin-top:6px;">约 {data["real_stock"] * data["conversion"]:.0f} {data["sub_unit"]}</div>' if data['sub_unit'] and data['conversion'] else ''}
+    {f'<div style="color:#8a91a0;font-size:14px;margin-top:8px;">约 {data["real_stock"] * data["conversion"]:.0f} {data["sub_unit"]}</div>' if data['sub_unit'] and data['conversion'] else ''}
     {f'<div class="warning">⚠️ 库存不足，请及时采购！</div>' if data['is_low'] else ''}</div>
     <div class="stats-grid">
       <div class="stat-box"><div class="label">累计入库</div><div class="stat-value" style="color:#2ecc71;">+{format_qty(data['total_in'], data['unit'])}</div></div>
@@ -427,17 +664,17 @@ def item_history(item_id):
     for t in trans:
         tl = '入库' if t['type'] == 'in' else '出库'
         tc = '#2ecc71' if t['type'] == 'in' else '#e74c3c'
-        rows += f'''<tr><td style="font-size:12px;color:#666;">{t['created_at'].strftime('%Y-%m-%d %H:%M')}</td>
+        rows += f'''<tr><td style="font-size:12px;color:#8a91a0;">{t['created_at'].strftime('%Y-%m-%d %H:%M')}</td>
         <td style="color:{tc};font-weight:600;">{tl}</td>
-        <td class="num" style="color:{tc};font-weight:600;">{'+' if t['type']=='in' else '-'}{format_qty(t['quantity'], item['unit'])}</td>
+        <td class="num" style="color:{tc};">{'+' if t['type']=='in' else '-'}{format_qty(t['quantity'], item['unit'])}</td>
         <td style="font-size:12px;">{t.get('department') or ''}</td>
-        <td style="font-size:12px;color:#999;">{t.get('note') or ''}</td></tr>'''
-    if not rows: rows = '<tr><td colspan="5" style="text-align:center;color:#888;padding:30px;">暂无记录</td></tr>'
+        <td style="font-size:12px;color:#8a91a0;">{t.get('note') or ''}</td></tr>'''
+    if not rows: rows = '<tr><td colspan="5" style="text-align:center;color:#8a91a0;padding:30px;">暂无记录</td></tr>'
     return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>{item['name']} - 流水</title><style>{BASE_STYLE}</style></head><body>
     {render_header()}
     <div class="card" style="margin-bottom:16px;"><div style="font-size:18px;font-weight:700;">📋 {item['name']} · 出入库流水</div>
-    <div style="color:#888;font-size:13px;margin-top:6px;">共 {len(trans)} 条</div></div>
-    <div style="background:white;border-radius:12px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);overflow-x:auto;">
+    <div style="color:#8a91a0;font-size:13px;margin-top:6px;">共 {len(trans)} 条</div></div>
+    <div style="background:white;border-radius:16px;padding:8px 16px;box-shadow:0 2px 12px rgba(26,31,46,0.05);border:1px solid #e8ecf1;overflow-x:auto;">
     <table><thead><tr><th>时间</th><th>类型</th><th style="text-align:right;">数量</th><th>部门</th><th>备注</th></tr></thead>
     <tbody>{rows}</tbody></table></div>
     <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
@@ -465,8 +702,7 @@ def admin_page():
     rows_html = ''
     for r in rows:
         rs = float(r['initial_stock'] or 0) + float(r['total_in'] or 0) - float(r['total_out'] or 0)
-        opts = ''.join([f'<option value="{d}" {"selected" if d==r["department"] else ""}>{d}</option>' for d in ['综合部','工程部','秩序部','客服部','未分配']])
-        sc = '#e74c3c' if rs <= float(r['low_stock_threshold'] or 5) else '#333'
+        sc = '#e74c3c' if rs <= float(r['low_stock_threshold'] or 5) else '#1a1f2e'
         rows_html += f'''<tr data-id="{r['id']}">
             <td><input class="name" type="text" value="{r['name']}" style="width:120px;padding:4px;"></td>
             <td><input class="brand" type="text" value="{r.get('brand') or ''}" style="width:70px;padding:4px;"></td>
@@ -476,7 +712,7 @@ def admin_page():
             <td><input class="low_stock_threshold" type="number" step="0.01" value="{r['low_stock_threshold']}" style="width:60px;padding:4px;"></td>
             <td style="font-weight:600;color:{sc};font-size:12px;">{format_qty(rs, r['unit'])}</td>
             <td style="white-space:nowrap;">
-                <button onclick="saveItem(this, '{r['id']}')" style="padding:3px 7px;background:#2ecc71;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">保存</button>
+                <button onclick="saveItem(this, '{r['id']}')" style="padding:3px 7px;background:#FF6B1A;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">保存</button>
                 <button onclick="adjustStock('{r['id']}', 'in')" style="padding:3px 7px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">入</button>
                 <button onclick="adjustStock('{r['id']}', 'out')" style="padding:3px 7px;background:#f39c12;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">出</button>
                 <a href="/item/{r['id']}/history" target="_blank" style="padding:3px 7px;background:#9b59b6;color:#fff;border-radius:4px;text-decoration:none;font-size:12px;">流水</a>
@@ -484,14 +720,16 @@ def admin_page():
             </td></tr>'''
     
     return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>物资管理</title><style>
-    body {{ font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }}
-    .top-links a {{ display: inline-block; padding: 8px 16px; background: white; border-radius: 8px; color: #333; text-decoration: none; margin-right: 8px; margin-bottom: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); font-size: 14px; }}
-    .add-box, .toolbar {{ background: white; padding: 12px; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
-    .toolbar input, .toolbar select, .add-box input, .add-box select {{ padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-right: 6px; }}
-    .toolbar button, .add-box button {{ padding: 8px 16px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }}
-    table {{ width: 100%; background: white; border-radius: 12px; border-collapse: collapse; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
-    th {{ background: #f8f9fa; padding: 8px 4px; text-align: left; font-size: 12px; color: #666; border-bottom: 2px solid #eee; }}
-    td {{ padding: 4px; border-bottom: 1px solid #eee; font-size: 12px; }}
+    body {{ font-family: -apple-system, sans-serif; background: #f5f7fa; margin: 0; padding: 16px; color: #1a1f2e; }}
+    h1 {{ font-size: 20px; }}
+    .top-links a {{ display: inline-block; padding: 8px 16px; background: white; border-radius: 10px; color: #1a1f2e; text-decoration: none; margin-right: 8px; margin-bottom: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.04); font-size: 14px; border: 1px solid #e8ecf1; }}
+    .toolbar {{ background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #e8ecf1; }}
+    .toolbar input, .toolbar select {{ padding: 8px 12px; border: 1px solid #e8ecf1; border-radius: 8px; margin-right: 6px; font-size: 14px; }}
+    .toolbar button {{ padding: 8px 18px; background: #FF6B1A; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }}
+    table {{ width: 100%; background: white; border-radius: 12px; border-collapse: collapse; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #e8ecf1; }}
+    th {{ background: #f8f9fa; padding: 10px 6px; text-align: left; font-size: 12px; color: #8a91a0; border-bottom: 2px solid #e8ecf1; text-transform: uppercase; letter-spacing: 0.5px; }}
+    td {{ padding: 6px; border-bottom: 1px solid #f0f2f5; font-size: 13px; }}
+    tr:hover td {{ background: #fafbfc; }}
     </style><script>
     function saveItem(btn, id) {{ const r = btn.closest('tr');
       const d = {{id, name: r.querySelector('.name').value, brand: r.querySelector('.brand').value,
@@ -507,7 +745,7 @@ def admin_page():
       fetch('/api/admin/adjust_stock',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{id, type, quantity: parseFloat(q)}})}})
         .then(x=>x.json()).then(res=>{{alert(res.message); if(res.success) location.reload();}}); }}
     </script></head><body>
-    <h1 style="font-size:20px;">🛠️ 物资管理后台</h1>
+    <h1>🛠️ 物资管理后台</h1>
     <div class="top-links"><a href="/portal">🏠 导航</a><a href="/inventory">📦 库存</a><a href="/alert">🚨 预警</a></div>
     <div class="toolbar">
       <form method="get" style="display:inline-flex;gap:6px;align-items:center;">
@@ -518,11 +756,11 @@ def admin_page():
           <option {"selected" if dept_filter=="秩序部" else ""}>秩序部</option>
           <option {"selected" if dept_filter=="客服部" else ""}>客服部</option></select>
         <button type="submit">搜索</button>
-        <a href="/admin" style="padding:8px 16px;background:#eee;color:#333;border-radius:6px;text-decoration:none;">重置</a>
+        <a href="/admin" style="padding:8px 16px;background:#eee;color:#333;border-radius:8px;text-decoration:none;font-size:14px;">重置</a>
       </form>
-      <span style="color:#888;font-size:13px;margin-left:12px;">共 {len(rows)} 项</span></div>
+      <span style="color:#8a91a0;font-size:13px;margin-left:12px;">共 {len(rows)} 项</span></div>
     <table><thead><tr><th>名称</th><th>品牌</th><th>单位</th><th>部门</th><th>初始库存</th><th>预警值</th><th>当前</th><th>操作</th></tr></thead>
-    <tbody>{rows_html if rows_html else '<tr><td colspan="8" style="text-align:center;padding:40px;color:#888;">暂无</td></tr>'}</tbody></table>
+    <tbody>{rows_html if rows_html else '<tr><td colspan="8" style="text-align:center;padding:40px;color:#8a91a0;">暂无</td></tr>'}</tbody></table>
     </body></html>'''
 
 @app.route('/api/admin/update', methods=['POST'])
@@ -542,7 +780,6 @@ def admin_update():
                  d.get('department', old['department']),
                  float(d.get('initial_stock', old['initial_stock'] or 0)),
                  float(d.get('low_stock_threshold', old['low_stock_threshold'] or 5)), iid))
-            log_audit(cursor, '更新物资', iid, d.get('name', ''), f"库存{old['initial_stock']}→{d.get('initial_stock')}")
         conn.commit()
         return jsonify({'success': True, 'message': '已更新'})
     except Exception as e: return jsonify({'success': False, 'message': str(e)})
@@ -558,7 +795,6 @@ def admin_soft_delete():
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('UPDATE items SET is_deleted=1 WHERE id=%s', (iid,))
-            log_audit(cursor, '删除物资', iid, '', '软删除')
         conn.commit()
         return jsonify({'success': True, 'message': '已删除'})
     except Exception as e: return jsonify({'success': False, 'message': str(e)})
@@ -579,9 +815,8 @@ def admin_adjust_stock():
             cursor.execute(f"USE {MYSQL_DATABASE}")
             cursor.execute('INSERT INTO transactions (item_id,type,quantity,note,operator) VALUES (%s,%s,%s,%s,%s)',
                            (iid, typ, qty, '后台调整', '管理员'))
-            lb = '入库' if typ == 'in' else '出库'
-            log_audit(cursor, f'{lb}调整', iid, '', f'{lb}{qty}')
         conn.commit()
+        lb = '入库' if typ == 'in' else '出库'
         return jsonify({'success': True, 'message': f'已{lb} {qty}'})
     except Exception as e: return jsonify({'success': False, 'message': str(e)})
     finally: conn.close()
@@ -706,8 +941,6 @@ def import_plan():
                     (id,name,brand,spec,unit,initial_stock,low_stock_threshold,department)
                     VALUES (%s,%s,%s,%s,%s,0,5,%s)''', batch)
                 conn.commit()
-        log_audit(cursor, '批量导入', None, None, f'从采购计划表导入{count}条')
-        conn.commit()
         return f"🎉 成功导入 {count} 条物资！"
     except Exception as e:
         import traceback
@@ -715,7 +948,6 @@ def import_plan():
     finally:
         conn.close()
 
-# ============ 新增：查看某部门物资清单 ============
 @app.route('/api/list_dept_items')
 def list_dept_items():
     dept = request.args.get('dept', '').strip()
@@ -734,7 +966,6 @@ def list_dept_items():
     finally:
         conn.close()
 
-# ============ 新增：一键设置库存和预警值 ============
 @app.route('/api/setup_stock')
 def setup_stock():
     conn = get_db()
@@ -742,54 +973,38 @@ def setup_stock():
         with conn.cursor() as cursor:
             cursor.execute(f"USE {MYSQL_DATABASE}")
             results = []
-            
-            # ========== 客服部 ==========
-            # 擦手纸：保留 7c0c2b7e1a（碧红/碧红），软删其他2条
+            # 客服部 - 擦手纸保留 7c0c2b7e1a
             cursor.execute('''UPDATE items SET is_deleted=1 
                 WHERE is_deleted=0 AND name LIKE %s AND id != %s''', ('%擦手纸%', '7c0c2b7e1a'))
-            results.append(f"擦手纸 删除重复: {cursor.rowcount}条")
-            cursor.execute('''UPDATE items SET initial_stock=680, low_stock_threshold=180, unit='包'
-                WHERE id=%s''', ('7c0c2b7e1a',))
-            results.append(f"擦手纸 设置库存680包/预警180: {cursor.rowcount}条")
-            
-            # 大卷纸：保留 fc0ed139b3（碧红顺洁/700克/卷 12卷/箱），软删其他3条
+            results.append(f"擦手纸删除重复:{cursor.rowcount}")
+            cursor.execute('''UPDATE items SET initial_stock=680, low_stock_threshold=180, unit='包' WHERE id=%s''', ('7c0c2b7e1a',))
+            results.append(f"擦手纸设置:{cursor.rowcount}")
+            # 大卷纸保留 fc0ed139b3
             cursor.execute('''UPDATE items SET is_deleted=1 
-                WHERE is_deleted=0 AND (name LIKE %s OR name LIKE %s) AND id != %s''', 
-                ('%大卷纸%', '%卷纸%', 'fc0ed139b3'))
-            results.append(f"大卷纸 删除重复: {cursor.rowcount}条")
-            cursor.execute('''UPDATE items SET initial_stock=552, low_stock_threshold=96, unit='卷'
-                WHERE id=%s''', ('fc0ed139b3',))
-            results.append(f"大卷纸 设置库存552卷/预警96: {cursor.rowcount}条")
-            
-            # 坐垫纸：保留 af26543925（四季旺），软删其他2条
+                WHERE is_deleted=0 AND (name LIKE %s OR name LIKE %s) AND id != %s''', ('%大卷纸%', '%卷纸%', 'fc0ed139b3'))
+            results.append(f"大卷纸删除重复:{cursor.rowcount}")
+            cursor.execute('''UPDATE items SET initial_stock=552, low_stock_threshold=96, unit='卷' WHERE id=%s''', ('fc0ed139b3',))
+            results.append(f"大卷纸设置:{cursor.rowcount}")
+            # 坐垫纸保留 af26543925
             cursor.execute('''UPDATE items SET is_deleted=1 
                 WHERE is_deleted=0 AND name LIKE %s AND id != %s''', ('%坐垫纸%', 'af26543925'))
-            results.append(f"坐垫纸 删除重复: {cursor.rowcount}条")
-            cursor.execute('''UPDATE items SET initial_stock=125, low_stock_threshold=25, unit='盒'
-                WHERE id=%s''', ('af26543925',))
-            results.append(f"坐垫纸 设置库存125盒/预警25: {cursor.rowcount}条")
-            
-            # ========== 秩序部/工程部警示带 ==========
-            # 邦固黄黑警示带：10卷/预警5
-            cursor.execute('''UPDATE items SET initial_stock=10, low_stock_threshold=5, unit='卷'
-                WHERE id=%s''', ('13813139f4',))
-            results.append(f"邦固警示带 设置库存10卷/预警5: {cursor.rowcount}条")
-            
-            # 友安红白警示带：30卷/预警10
-            cursor.execute('''UPDATE items SET initial_stock=30, low_stock_threshold=10, unit='卷'
-                WHERE id=%s''', ('288fbd9f9f',))
-            results.append(f"友安警示带 设置库存30卷/预警10: {cursor.rowcount}条")
-            
-            # 浙安警示带：软删除
+            results.append(f"坐垫纸删除重复:{cursor.rowcount}")
+            cursor.execute('''UPDATE items SET initial_stock=125, low_stock_threshold=25, unit='盒' WHERE id=%s''', ('af26543925',))
+            results.append(f"坐垫纸设置:{cursor.rowcount}")
+            # 邦固警示带
+            cursor.execute('''UPDATE items SET initial_stock=10, low_stock_threshold=5, unit='卷' WHERE id=%s''', ('13813139f4',))
+            results.append(f"邦固警示带:{cursor.rowcount}")
+            # 友安警示带
+            cursor.execute('''UPDATE items SET initial_stock=30, low_stock_threshold=10, unit='卷' WHERE id=%s''', ('288fbd9f9f',))
+            results.append(f"友安警示带:{cursor.rowcount}")
+            # 浙安警示带软删
             cursor.execute('UPDATE items SET is_deleted=1 WHERE id=%s', ('81992a4a4b',))
-            results.append(f"浙安警示带 删除: {cursor.rowcount}条")
-            
-            # 综合部库存所有物资的初始库存和预警值保持不变（都是0和5）
-            
+            results.append(f"浙安警示带删除:{cursor.rowcount}")
         conn.commit()
         return "✅ 设置完成：<br>" + "<br>".join(results)
     finally:
         conn.close()
+
 @app.route('/api/export_links')
 def export_links():
     conn = get_db()
@@ -830,42 +1045,45 @@ def check_alerts():
 @app.route('/portal')
 def portal():
     return '''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>环球梦大厦 · 导航</title>
-    <style>* { box-sizing: border-box; } body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
-    .header { display: flex; align-items: center; background: white; padding: 22px 26px; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 20px; }
-    .header img { height: 52px; margin-right: 18px; }
-    .project-name { font-size: 26px; font-weight: 800; color: #1a1a1a; letter-spacing: 2px; }
-    .sub-title { font-size: 12px; color: #999; margin-top: 4px; letter-spacing: 4px; }
+    <style>* { box-sizing: border-box; } body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f5f7fa; margin: 0; padding: 20px; color: #1a1f2e; }
+    .header { display: flex; align-items: center; background: linear-gradient(135deg, #1a1f2e 0%, #252b3d 100%); padding: 22px 26px; border-radius: 18px; box-shadow: 0 8px 32px rgba(26,31,46,0.18); margin-bottom: 20px; position: relative; overflow: hidden; }
+    .header::after { content: ''; position: absolute; top: -50%; right: -10%; width: 280px; height: 280px; background: radial-gradient(circle, rgba(255,107,26,0.15) 0%, transparent 70%); }
+    .header img { height: 46px; margin-right: 16px; background: white; padding: 6px 10px; border-radius: 10px; z-index: 1; }
+    .header .title { z-index: 1; }
+    .project-name { font-size: 24px; font-weight: 800; color: #fff; letter-spacing: 3px; }
+    .sub-title { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 4px; letter-spacing: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-    .section { background: white; border-radius: 16px; padding: 20px 22px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
-    .section-title { font-size: 15px; font-weight: 700; color: #333; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid #f0f2f5; }
-    .link-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; margin-bottom: 8px; background: #f8fafc; border-radius: 10px; text-decoration: none; color: #333; }
-    .link-item:hover { background: #eef2f7; }
+    .section { background: white; border-radius: 16px; padding: 20px 22px; box-shadow: 0 2px 12px rgba(26,31,46,0.05); border: 1px solid #e8ecf1; }
+    .section-title { font-size: 15px; font-weight: 700; color: #1a1f2e; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid #f0f2f5; }
+    .link-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; margin-bottom: 8px; background: #f8fafc; border-radius: 10px; text-decoration: none; color: #1a1f2e; transition: all 0.15s; border: 1px solid transparent; }
+    .link-item:hover { background: #fff5ec; border-color: #FF6B1A; transform: translateX(3px); }
     .link-item .label { font-size: 14px; font-weight: 600; }
-    .link-item .desc { font-size: 11px; color: #999; margin-top: 2px; }
-    .footer { text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; }
+    .link-item .desc { font-size: 11px; color: #8a91a0; margin-top: 2px; }
+    .link-item .arrow { color: #FF6B1A; font-size: 16px; font-weight: bold; }
+    .footer { text-align: center; color: #8a91a0; font-size: 12px; margin-top: 30px; letter-spacing: 1px; }
     </style></head><body>
-    <div class="header"><img src="/static/logo.png" onerror="this.style.display='none'"><div><div class="project-name">环球梦大厦</div><div class="sub-title">物资库存系统 · 统一导航</div></div></div>
+    <div class="header"><img src="/static/logo.png" onerror="this.style.display='none'"><div class="title"><div class="project-name">环球梦大厦</div><div class="sub-title">物资库存系统 · 统一导航</div></div></div>
     <div class="grid">
     <div class="section"><div class="section-title">📦 库存看板</div>
-    <a class="link-item" href="/inventory"><div><div class="label">全局库存</div><div class="desc">综合部+客服部+秩序部</div></div><span>›</span></a>
-    <a class="link-item" href="/inventory?dept=综合部"><div><div class="label">综合部库存</div><div class="desc">全部物资</div></div><span>›</span></a>
-    <a class="link-item" href="/inventory?dept=客服部"><div><div class="label">客服部库存</div><div class="desc">擦手纸/卷纸/坐垫纸</div></div><span>›</span></a>
-    <a class="link-item" href="/inventory?dept=秩序部"><div><div class="label">秩序部库存</div><div class="desc">警示带</div></div><span>›</span></a>
+    <a class="link-item" href="/inventory"><div><div class="label">全局库存</div><div class="desc">综合部+客服部+秩序部</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/inventory?dept=综合部"><div><div class="label">综合部库存</div><div class="desc">全部物资</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/inventory?dept=客服部"><div><div class="label">客服部库存</div><div class="desc">擦手纸/卷纸/坐垫纸</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/inventory?dept=秩序部"><div><div class="label">秩序部库存</div><div class="desc">警示带</div></div><span class="arrow">›</span></a>
     </div>
     <div class="section"><div class="section-title">🚨 预警看板</div>
-    <a class="link-item" href="/alert"><div><div class="label">全部预警</div><div class="desc">所有缺货汇总</div></div><span>›</span></a>
-    <a class="link-item" href="/alert?dept=综合部"><div><div class="label">综合部预警</div><div class="desc">综合部缺货</div></div><span>›</span></a>
-    <a class="link-item" href="/alert?dept=客服部"><div><div class="label">客服部预警</div><div class="desc">客服部缺货</div></div><span>›</span></a>
-    <a class="link-item" href="/alert?dept=秩序部"><div><div class="label">秩序部预警</div><div class="desc">警示带缺货</div></div><span>›</span></a>
+    <a class="link-item" href="/alert"><div><div class="label">全部预警</div><div class="desc">所有缺货汇总</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/alert?dept=综合部"><div><div class="label">综合部预警</div><div class="desc">综合部缺货</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/alert?dept=客服部"><div><div class="label">客服部预警</div><div class="desc">客服部缺货</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/alert?dept=秩序部"><div><div class="label">秩序部预警</div><div class="desc">警示带缺货</div></div><span class="arrow">›</span></a>
     </div>
     <div class="section"><div class="section-title">🛠️ 管理后台</div>
-    <a class="link-item" href="/admin"><div><div class="label">物资管理</div><div class="desc">改库存/预警值</div></div><span>›</span></a>
+    <a class="link-item" href="/admin"><div><div class="label">物资管理</div><div class="desc">改库存/预警值</div></div><span class="arrow">›</span></a>
     </div>
     <div class="section"><div class="section-title">⚙️ 系统工具</div>
-    <a class="link-item" href="/api/import_plan"><div><div class="label">导入采购计划表</div><div class="desc">重新导入全部物资</div></div><span>›</span></a>
-    <a class="link-item" href="/api/setup_stock"><div><div class="label">一键设置客服/秩序库存</div><div class="desc">擦手纸680 卷纸552 坐垫纸125 警示带</div></div><span>›</span></a>
-    <a class="link-item" href="/api/export_links"><div><div class="label">导出全部物资</div><div class="desc">CSV格式</div></div><span>›</span></a>
-    <a class="link-item" href="/api/check_alerts"><div><div class="label">手动触发预警</div><div class="desc">推送到钉钉群</div></div><span>›</span></a>
+    <a class="link-item" href="/api/import_plan"><div><div class="label">导入采购计划表</div><div class="desc">重新导入全部物资</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/api/setup_stock"><div><div class="label">一键设置客服/秩序库存</div><div class="desc">擦手纸680 卷纸552 坐垫纸125 警示带</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/api/export_links"><div><div class="label">导出全部物资</div><div class="desc">CSV格式</div></div><span class="arrow">›</span></a>
+    <a class="link-item" href="/api/check_alerts"><div><div class="label">手动触发预警</div><div class="desc">推送到钉钉群</div></div><span class="arrow">›</span></a>
     </div>
     </div><div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div>
     </body></html>'''
