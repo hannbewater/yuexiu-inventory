@@ -731,9 +731,9 @@ def init_data():
                 unit = str(row['计量单位']).replace("\n", "").strip() if pd.notna(row.get('计量单位')) else '个'
                 try: stock = int(float(row['数量'])) if pd.notna(row.get('数量')) else 0
                 except: stock = 0
-                # 🌟 用物资编码生成唯一ID，同编码只保留一条
+                # 用物资编码生成唯一ID，同编码只保留一条
                 item_id = hashlib.md5(asset_code.encode()).hexdigest()[:10]
-                cursor.execute('''INSERT OR REPLACE INTO items 
+                cursor.execute('''REPLACE INTO items 
                     (id,name,unit,initial_stock,low_stock_threshold,department,asset_code)
                     VALUES (%s,%s,%s,%s,5,%s,%s)''',
                     (item_id, name, unit, stock, dept, asset_code))
