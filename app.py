@@ -286,55 +286,111 @@ def item_history(item_id):
     <tbody>{rows}</tbody></table></div>
     <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
 
-@app.route('/dashboard')
-def dashboard():
+@app.route('/inventory')
+def inventory():
+    """📦 库存看板：按部门展示所有有库存的物资（不管缺不缺）"""
     dept = normalize_department(request.args.get('dept', '').strip())
     query = request.args.get('q', '').strip()
+    
     all_items = get_all_items_with_stock()
     positive = [d for d in all_items if d['real_stock'] > 0]
     if query:
-        positive = [d for d in positive if query.lower() in d['name'].lower()]
+        positive = [d for d in positive if query.lower() in d['name'].lower() or query.lower() in d.get('asset_code', '').lower()]
     
     dept_items = {}
     for item in positive:
         dept_items.setdefault(item['department'], []).append(item)
-    for d in dept_items: dept_items[d].sort(key=lambda x: x['name'])
-    
-    if dept:
-        my_items = dept_items.get(dept, [])
+    for d in dept_items:
+        dept_items[d].sort(key=lambda x: x['name'])
     
     quick = '<div class="quick-links">'
     for d in ['综合部', '工程部', '秩序部', '客服部']:
-        quick += f'<a href="/dashboard?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
-    quick += f'<a href="/dashboard" class="{"active" if not dept else ""}">🌐 全局</a></div>'
+        quick += f'<a href="/inventory?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
+    quick += f'<a href="/inventory" class="{"active" if not dept else ""}">🌐 全局</a></div>'
     
-    search = f'<form method="get" action="/dashboard" class="search-bar"><input type="hidden" name="dept" value="{dept}"><input type="text" name="q" value="{query}" placeholder="🔍 搜索物资"><button type="submit">搜索</button></form>'
+    search = f'<form method="get" action="/inventory" class="search-bar"><input type="hidden" name="dept" value="{dept}"><input type="text" name="q" value="{query}" placeholder="🔍 搜索物资名称/资产编号"><button type="submit">搜索</button></form>'
+    
+    def render_table(items):
+        rows = ''
+        for item in items:
+            rows += f'''<tr>
+                <td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>
+                <span style="color:#ccc;font-size:11px;margin-left:6px;">{item["asset_code"]}</span></td>
+                <td class="num" style="color:#333;">{item["real_stock"]} {item["unit"]}</td>
+            </tr>'''
+        return f'<table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table>'
     
     if dept:
-        rows = ''
-        for item in my_items:
-            lc = '#e74c3c' if item['is_low'] else '#333'
-            badge = ' <span style="color:#e74c3c;font-size:11px;">⚠️</span>' if item['is_low'] else ''
-            rows += f'<tr><td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>{badge}<span style="color:#ccc;font-size:11px;margin-left:6px;">{item["asset_code"]}</span></td><td class="num" style="color:{lc};">{item["real_stock"]} {item["unit"]}</td></tr>'
-        if not rows: rows = '<tr><td colspan="2" style="text-align:center;color:#888;padding:15px;">暂无</td></tr>'
-        body = f'''<div class="section-title">📦 {dept}物资库存清单<span>{len(my_items)} 项</span></div>
-        <div class="scroll-card"><table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table></div>'''
+        my_items = dept_items.get(dept, [])
+        if my_items:
+            body = f'<div class="section-title">📦 {dept}库存清单<span>{len(my_items)} 项</span></div><div class="scroll-card">{render_table(my_items)}</div>'
+        else:
+            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">该部门暂无有库存的物资</div>'
     else:
-        body = ''
         if dept_items:
-            body = f'<div class="section-title">📦 各部门物资库存清单<span>{len(positive)} 项</span></div>'
+            body = f'<div class="section-title">📦 各部门库存总览<span>{len(positive)} 项</span></div>'
             for d, items in dept_items.items():
-                rows = ''
-                for item in items:
-                    lc = '#e74c3c' if item['is_low'] else '#333'
-                    badge = ' <span style="color:#e74c3c;font-size:11px;">⚠️</span>' if item['is_low'] else ''
-                    rows += f'<tr><td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>{badge}<span style="color:#ccc;font-size:11px;margin-left:6px;">{item["asset_code"]}</span></td><td class="num" style="color:{lc};">{item["real_stock"]} {item["unit"]}</td></tr>'
-                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;">📁 {d}（{len(items)} 项）</div><table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table></div>'
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;">📁 {d}（{len(items)} 项）</div>{render_table(items)}</div>'
         else:
             body = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无有库存的物资</div>'
     
-    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>环球梦大厦 · 物资看板</title><style>{BASE_STYLE}</style></head><body>
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>环球梦大厦 · 库存看板</title><style>{BASE_STYLE}</style></head><body>
     {render_header()}{quick}{search}{body}
+    <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
+
+
+@app.route('/alert')
+def alert_dashboard():
+    """🚨 预警看板：只展示低于阈值的物资"""
+    dept = normalize_department(request.args.get('dept', '').strip())
+    
+    all_items = get_all_items_with_stock()
+    low_items = [d for d in all_items if d['is_low']]
+    low_items.sort(key=lambda x: x['real_stock'])
+    
+    dept_low = {}
+    for item in low_items:
+        dept_low.setdefault(item['department'], []).append(item)
+    
+    quick = '<div class="quick-links">'
+    for d in ['综合部', '工程部', '秩序部', '客服部']:
+        quick += f'<a href="/alert?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
+    quick += f'<a href="/alert" class="{"active" if not dept else ""}">🌐 全部预警</a></div>'
+    
+    if dept:
+        my_low = dept_low.get(dept, [])
+        if my_low:
+            cards = ''.join([f'''
+                <div class="low-item">
+                    <div>
+                        <span class="name">{it["name"]}</span>
+                        <span class="meta">[{it["asset_code"]}]</span>
+                        <span class="meta">预警值 {it["threshold"]}</span>
+                    </div>
+                    <div class="stock">{it["real_stock"]} {it["unit"]}</div>
+                </div>''' for it in my_low])
+            body = f'<div class="section-title">🚨 {dept}预警物资<span>{len(my_low)} 项</span></div><div class="scroll-card">{cards}</div>'
+        else:
+            body = f'<div class="card ok-msg">✅ {dept}所有物资库存充足</div>'
+    else:
+        if dept_low:
+            body = f'<div class="section-title">🚨 全部预警物资<span>{len(low_items)} 项</span></div>'
+            for d, items in dept_low.items():
+                cards = ''.join([f'''
+                    <div class="low-item">
+                        <div>
+                            <span class="name">{it["name"]}</span>
+                            <span class="meta">[{it["asset_code"]}]</span>
+                            <span class="meta">预警值 {it["threshold"]}</span>
+                        </div>
+                        <div class="stock">{it["real_stock"]} {it["unit"]}</div>
+                    </div>''' for it in items])
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;color:#e74c3c;">📁 {d}（{len(items)} 项）</div>{cards}</div>'
+        else:
+            body = '<div class="card ok-msg">✅ 所有物资库存充足，无预警</div>'
+    
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>环球梦大厦 · 预警看板</title><style>{BASE_STYLE}</style></head><body>
+    {render_header()}{quick}{body}
     <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
 
 @app.route('/admin')
