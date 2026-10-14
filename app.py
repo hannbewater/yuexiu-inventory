@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 import logging
 import pymysql
 import os
@@ -184,7 +184,7 @@ BASE_STYLE = '''
     .section-title { font-size: 16px; font-weight: 700; color: #333; margin: 24px 0 12px; }
     .section-title span { background: #e74c3c; color: white; font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
     .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-    .scroll-card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); max-height: 340px; overflow-y: auto; }
+    .scroll-card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); max-height: 400px; overflow-y: auto; }
     .low-item { background: #fff5f5; border-left: 4px solid #e74c3c; padding: 12px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
     .low-item .name { font-weight: 600; color: #333; }
     .low-item .meta { color: #888; font-size: 12px; margin-left: 8px; }
@@ -193,7 +193,7 @@ BASE_STYLE = '''
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th { color: #888; text-align: left; padding-bottom: 8px; font-weight: 500; }
     td { padding: 8px 0; border-bottom: 1px solid #eee; }
-    td.num { text-align: right; color: #e74c3c; font-weight: 600; }
+    td.num { text-align: right; color: #333; font-weight: 600; }
     .footer { text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; padding-bottom: 20px; }
     .quick-links { text-align: center; margin: 15px 0; }
     .quick-links a { display: inline-block; padding: 6px 14px; background: white; border-radius: 20px; color: #333; text-decoration: none; font-size: 13px; margin: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
@@ -206,6 +206,114 @@ BASE_STYLE = '''
 @app.route('/')
 def home():
     return "🎉 环球梦大厦库存看板系统运行中！请扫码访问。"
+
+@app.route('/dashboard')
+def dashboard_redirect():
+    """兼容旧链接，跳到库存看板"""
+    return redirect('/inventory')
+
+@app.route('/inventory')
+def inventory():
+    """📦 库存看板：按部门展示所有有库存的物资（不管缺不缺）"""
+    dept = normalize_department(request.args.get('dept', '').strip())
+    query = request.args.get('q', '').strip()
+    
+    all_items = get_all_items_with_stock()
+    positive = [d for d in all_items if d['real_stock'] > 0]
+    if query:
+        positive = [d for d in positive if query.lower() in d['name'].lower() or query.lower() in d.get('asset_code', '').lower()]
+    
+    dept_items = {}
+    for item in positive:
+        dept_items.setdefault(item['department'], []).append(item)
+    for d in dept_items:
+        dept_items[d].sort(key=lambda x: x['name'])
+    
+    quick = '<div class="quick-links">'
+    for d in ['综合部', '工程部', '秩序部', '客服部']:
+        quick += f'<a href="/inventory?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
+    quick += f'<a href="/inventory" class="{"active" if not dept else ""}">🌐 全局</a>'
+    quick += '<a href="/alert">🚨 预警看板</a></div>'
+    
+    search = f'<form method="get" action="/inventory" class="search-bar"><input type="hidden" name="dept" value="{dept}"><input type="text" name="q" value="{query}" placeholder="🔍 搜索物资名称/资产编号"><button type="submit">搜索</button></form>'
+    
+    def render_table(items):
+        rows = ''
+        for item in items:
+            rows += f'''<tr>
+                <td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>
+                <span style="color:#ccc;font-size:11px;margin-left:6px;">{item["asset_code"]}</span></td>
+                <td class="num">{item["real_stock"]} {item["unit"]}</td>
+            </tr>'''
+        return f'<table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table>'
+    
+    if dept:
+        my_items = dept_items.get(dept, [])
+        if my_items:
+            body = f'<div class="section-title">📦 {dept}库存清单<span>{len(my_items)} 项</span></div><div class="scroll-card">{render_table(my_items)}</div>'
+        else:
+            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">该部门暂无有库存的物资</div>'
+    else:
+        if dept_items:
+            body = f'<div class="section-title">📦 各部门库存总览<span>{len(positive)} 项</span></div>'
+            for d, items in dept_items.items():
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;">📁 {d}（{len(items)} 项）</div>{render_table(items)}</div>'
+        else:
+            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无有库存的物资</div>'
+    
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>库存看板 · 环球梦大厦</title><style>{BASE_STYLE}</style></head><body>
+    {render_header()}{quick}{search}{body}
+    <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
+
+@app.route('/alert')
+def alert_dashboard():
+    """🚨 预警看板：只展示低于阈值的物资"""
+    dept = normalize_department(request.args.get('dept', '').strip())
+    
+    all_items = get_all_items_with_stock()
+    low_items = [d for d in all_items if d['is_low']]
+    low_items.sort(key=lambda x: x['real_stock'])
+    
+    dept_low = {}
+    for item in low_items:
+        dept_low.setdefault(item['department'], []).append(item)
+    
+    quick = '<div class="quick-links">'
+    for d in ['综合部', '工程部', '秩序部', '客服部']:
+        quick += f'<a href="/alert?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
+    quick += f'<a href="/alert" class="{"active" if not dept else ""}">🌐 全部预警</a>'
+    quick += '<a href="/inventory">📦 库存看板</a></div>'
+    
+    def render_low(items):
+        cards = ''
+        for it in items:
+            cards += f'''<div class="low-item">
+                <div>
+                    <span class="name">{it["name"]}</span>
+                    <span class="meta">[{it["asset_code"]}]</span>
+                    <span class="meta">预警值 {it["threshold"]}</span>
+                </div>
+                <div class="stock">{it["real_stock"]} {it["unit"]}</div>
+            </div>'''
+        return cards
+    
+    if dept:
+        my_low = dept_low.get(dept, [])
+        if my_low:
+            body = f'<div class="section-title">🚨 {dept}预警物资<span>{len(my_low)} 项</span></div><div class="scroll-card">{render_low(my_low)}</div>'
+        else:
+            body = f'<div class="card ok-msg">✅ {dept}所有物资库存充足</div>'
+    else:
+        if dept_low:
+            body = f'<div class="section-title">🚨 全部预警物资<span>{len(low_items)} 项</span></div>'
+            for d, items in dept_low.items():
+                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;color:#e74c3c;">📁 {d}（{len(items)} 项）</div>{render_low(items)}</div>'
+        else:
+            body = '<div class="card ok-msg">✅ 所有物资库存充足，无预警</div>'
+    
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>预警看板 · 环球梦大厦</title><style>{BASE_STYLE}</style></head><body>
+    {render_header()}{quick}{body}
+    <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
 
 @app.route('/item/<item_id>')
 def item_page(item_id):
@@ -227,6 +335,7 @@ def item_page(item_id):
             real_stock = row['initial_stock'] + row['total_in'] - row['total_out']
             data = {'name': row['name'], 'unit': row['unit'], 'real_stock': real_stock,
                     'total_in': row['total_in'], 'total_out': row['total_out'],
+                    'asset_code': row.get('asset_code') or '',
                     'is_low': real_stock <= row['low_stock_threshold']}
     finally:
         conn.close()
@@ -243,7 +352,9 @@ def item_page(item_id):
     .stat-value {{ font-size: 28px; font-weight: 700; margin-top: 8px; }}
     </style></head><body>
     {render_header()}
-    <div class="item-card"><div class="item-name">{data['name']}</div><div class="label">实时库存</div>
+    <div class="item-card"><div class="item-name">{data['name']}</div>
+    <div style="color:#ccc;font-size:13px;margin-bottom:12px;">资产编号：{data['asset_code']}</div>
+    <div class="label">实时库存</div>
     <div class="stock-number">{data['real_stock']}<span class="unit"> {data['unit']}</span></div>
     {f'<div class="warning">⚠️ 库存不足，请及时采购！</div>' if data['is_low'] else ''}</div>
     <div class="stats-grid">
@@ -284,113 +395,6 @@ def item_history(item_id):
     <div style="background:white;border-radius:12px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);overflow-x:auto;">
     <table><thead><tr><th>时间</th><th>类型</th><th style="text-align:right;">数量</th><th>领用部门</th><th>操作人</th><th>备注</th></tr></thead>
     <tbody>{rows}</tbody></table></div>
-    <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
-
-@app.route('/inventory')
-def inventory():
-    """📦 库存看板：按部门展示所有有库存的物资（不管缺不缺）"""
-    dept = normalize_department(request.args.get('dept', '').strip())
-    query = request.args.get('q', '').strip()
-    
-    all_items = get_all_items_with_stock()
-    positive = [d for d in all_items if d['real_stock'] > 0]
-    if query:
-        positive = [d for d in positive if query.lower() in d['name'].lower() or query.lower() in d.get('asset_code', '').lower()]
-    
-    dept_items = {}
-    for item in positive:
-        dept_items.setdefault(item['department'], []).append(item)
-    for d in dept_items:
-        dept_items[d].sort(key=lambda x: x['name'])
-    
-    quick = '<div class="quick-links">'
-    for d in ['综合部', '工程部', '秩序部', '客服部']:
-        quick += f'<a href="/inventory?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
-    quick += f'<a href="/inventory" class="{"active" if not dept else ""}">🌐 全局</a></div>'
-    
-    search = f'<form method="get" action="/inventory" class="search-bar"><input type="hidden" name="dept" value="{dept}"><input type="text" name="q" value="{query}" placeholder="🔍 搜索物资名称/资产编号"><button type="submit">搜索</button></form>'
-    
-    def render_table(items):
-        rows = ''
-        for item in items:
-            rows += f'''<tr>
-                <td><a href="/item/{item["id"]}/history" style="color:#333;text-decoration:none;">{item["name"]}</a>
-                <span style="color:#ccc;font-size:11px;margin-left:6px;">{item["asset_code"]}</span></td>
-                <td class="num" style="color:#333;">{item["real_stock"]} {item["unit"]}</td>
-            </tr>'''
-        return f'<table><thead><tr><th>物资</th><th style="text-align:right;">当前库存</th></tr></thead><tbody>{rows}</tbody></table>'
-    
-    if dept:
-        my_items = dept_items.get(dept, [])
-        if my_items:
-            body = f'<div class="section-title">📦 {dept}库存清单<span>{len(my_items)} 项</span></div><div class="scroll-card">{render_table(my_items)}</div>'
-        else:
-            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">该部门暂无有库存的物资</div>'
-    else:
-        if dept_items:
-            body = f'<div class="section-title">📦 各部门库存总览<span>{len(positive)} 项</span></div>'
-            for d, items in dept_items.items():
-                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;">📁 {d}（{len(items)} 项）</div>{render_table(items)}</div>'
-        else:
-            body = '<div class="card" style="text-align:center;color:#888;padding:20px;">暂无有库存的物资</div>'
-    
-    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>环球梦大厦 · 库存看板</title><style>{BASE_STYLE}</style></head><body>
-    {render_header()}{quick}{search}{body}
-    <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
-
-
-@app.route('/alert')
-def alert_dashboard():
-    """🚨 预警看板：只展示低于阈值的物资"""
-    dept = normalize_department(request.args.get('dept', '').strip())
-    
-    all_items = get_all_items_with_stock()
-    low_items = [d for d in all_items if d['is_low']]
-    low_items.sort(key=lambda x: x['real_stock'])
-    
-    dept_low = {}
-    for item in low_items:
-        dept_low.setdefault(item['department'], []).append(item)
-    
-    quick = '<div class="quick-links">'
-    for d in ['综合部', '工程部', '秩序部', '客服部']:
-        quick += f'<a href="/alert?dept={d}" class="{"active" if d==dept else ""}">{d}</a>'
-    quick += f'<a href="/alert" class="{"active" if not dept else ""}">🌐 全部预警</a></div>'
-    
-    if dept:
-        my_low = dept_low.get(dept, [])
-        if my_low:
-            cards = ''.join([f'''
-                <div class="low-item">
-                    <div>
-                        <span class="name">{it["name"]}</span>
-                        <span class="meta">[{it["asset_code"]}]</span>
-                        <span class="meta">预警值 {it["threshold"]}</span>
-                    </div>
-                    <div class="stock">{it["real_stock"]} {it["unit"]}</div>
-                </div>''' for it in my_low])
-            body = f'<div class="section-title">🚨 {dept}预警物资<span>{len(my_low)} 项</span></div><div class="scroll-card">{cards}</div>'
-        else:
-            body = f'<div class="card ok-msg">✅ {dept}所有物资库存充足</div>'
-    else:
-        if dept_low:
-            body = f'<div class="section-title">🚨 全部预警物资<span>{len(low_items)} 项</span></div>'
-            for d, items in dept_low.items():
-                cards = ''.join([f'''
-                    <div class="low-item">
-                        <div>
-                            <span class="name">{it["name"]}</span>
-                            <span class="meta">[{it["asset_code"]}]</span>
-                            <span class="meta">预警值 {it["threshold"]}</span>
-                        </div>
-                        <div class="stock">{it["real_stock"]} {it["unit"]}</div>
-                    </div>''' for it in items])
-                body += f'<div class="scroll-card" style="margin-bottom:12px;"><div style="font-weight:700;font-size:15px;margin-bottom:10px;color:#e74c3c;">📁 {d}（{len(items)} 项）</div>{cards}</div>'
-        else:
-            body = '<div class="card ok-msg">✅ 所有物资库存充足，无预警</div>'
-    
-    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>环球梦大厦 · 预警看板</title><style>{BASE_STYLE}</style></head><body>
-    {render_header()}{quick}{body}
     <div class="footer">数据实时同步 · 环球梦大厦物业服务中心</div></body></html>'''
 
 @app.route('/admin')
@@ -466,7 +470,7 @@ def admin_page():
         .then(x=>x.json()).then(res=>{{alert(res.message); if(res.success) location.reload();}}); }}
     </script></head><body>
     <h1 style="font-size:20px;">🛠️ 物资管理后台</h1>
-    <div class="top-links"><a href="/dashboard">📊 看板</a><a href="/admin">📦 物资</a><a href="/admin/upload_qrcode">📤 上传二维码表</a><a href="/admin/logs">📜 日志</a></div>
+    <div class="top-links"><a href="/portal">🏠 导航</a><a href="/inventory">📦 库存看板</a><a href="/alert">🚨 预警看板</a><a href="/admin/upload_qrcode">📤 上传二维码表</a><a href="/admin/logs">📜 日志</a></div>
     <div class="add-box"><b>➕ 新增</b>
       <input id="n_name" placeholder="名称" style="width:180px;">
       <input id="n_unit" placeholder="单位" style="width:60px;">
@@ -501,7 +505,7 @@ def admin_upload_page():
     .top-links a{display:inline-block;padding:8px 16px;background:white;border-radius:8px;color:#333;text-decoration:none;margin-right:8px;box-shadow:0 2px 6px rgba(0,0,0,0.05);font-size:14px;}
     </style></head><body>
     <h1>📤 上传草料二维码导出表</h1>
-    <div class="top-links" style="margin-bottom:15px;"><a href="/admin">📦 物资</a><a href="/dashboard">📊 看板</a></div>
+    <div class="top-links" style="margin-bottom:15px;"><a href="/portal">🏠 导航</a><a href="/admin">📦 物资</a></div>
     <div class="card">
     <p class="hint">📌 操作说明：<br>
     1. 草料后台导出子码列表，保存为 CSV 格式（UTF-8）<br>
@@ -591,7 +595,7 @@ def admin_logs():
     td{{padding:8px 10px;border-bottom:1px solid #eee;font-size:13px;}}
     .top-links a{{display:inline-block;padding:8px 16px;background:white;border-radius:8px;color:#333;text-decoration:none;margin-right:8px;box-shadow:0 2px 6px rgba(0,0,0,0.05);font-size:14px;}}
     </style></head><body>
-    <div class="top-links"><a href="/admin">📦 物资</a><a href="/dashboard">📊 看板</a></div>
+    <div class="top-links"><a href="/portal">🏠 导航</a><a href="/admin">📦 物资</a></div>
     <h1>📜 操作日志</h1>
     <table><thead><tr><th>时间</th><th>操作</th><th>物资</th><th>详情</th></tr></thead><tbody>{rows}</tbody></table>
     </body></html>'''
@@ -786,7 +790,7 @@ def init_data():
                 count += 1
             log_audit(cursor, '批量导入', None, None, f'按物资编码导入{count}条')
         conn.commit()
-        return f"🎉 成功导入 {count} 条物资！每条都有唯一的物资编码，重名不再冲突。"
+        return f"🎉 成功导入 {count} 条物资！"
     except Exception as e:
         return f"导入失败: {str(e)}"
     finally:
@@ -822,15 +826,41 @@ def check_alerts():
     for d, items in depts_low.items():
         lines.append(f"**【{d}】**")
         for it in items:
-            lines.append(f"> {it['name']}（{it['asset_code']}）：剩余 **{it['real_stock']}** {it['unit']}（阈值 {it['low_stock_threshold']}）")
+            lines.append(f"> {it['name']}（{it['asset_code']}）：剩余 **{it['real_stock']}** {it['unit']}（阈值 {it['threshold']}）")
         lines.append("")
     msg = "\n".join(lines)
     ok = send_alert_to_group(msg, list(at_set))
     return f"✅ 已推送，共@ {len(at_set)}人" if ok else "❌ 推送失败"
 
+@app.route('/search_item')
+def search_item():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return "<script>alert('请输入搜索内容');history.back();</script>"
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code=%s OR name=%s) LIMIT 1', (q, q))
+            row = cursor.fetchone()
+            if row:
+                return f"<script>location.href='/item/{row['id']}';</script>"
+            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code LIKE %s OR name LIKE %s) LIMIT 10', (f'%{q}%', f'%{q}%'))
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return f"<script>location.href='/item/{rows[0]['id']}';</script>"
+            if len(rows) == 0:
+                return f"<h2 style='text-align:center;margin-top:80px;font-family:sans-serif;'>没有找到「{q}」<br><br><a href='/portal' style='color:#333;'>返回导航</a></h2>"
+            html = f"<html><head><meta charset='UTF-8'><title>搜索结果</title><style>body{{font-family:-apple-system,sans-serif;background:#f0f2f5;padding:20px;}}a{{display:block;background:white;padding:14px 18px;margin-bottom:8px;border-radius:10px;color:#333;text-decoration:none;box-shadow:0 2px 6px rgba(0,0,0,0.05);}}a:hover{{background:#eef2f7;}}</style></head><body><h2>找到 {len(rows)} 条匹配：</h2>"
+            for r in rows:
+                html += f"<a href='/item/{r['id']}'>{r['name']}</a>"
+            html += "<p style='text-align:center;margin-top:20px;'><a href='/portal' style='display:inline-block;background:#333;color:white;padding:10px 20px;border-radius:8px;'>返回导航</a></p></body></html>"
+            return html
+    finally:
+        conn.close()
+
 @app.route('/portal')
 def portal():
-    """统一导航入口"""
     return '''
     <!DOCTYPE html>
     <html lang="zh-CN">
@@ -866,7 +896,6 @@ def portal():
             function gotoItem() {
                 const q = document.getElementById('item_search').value.trim();
                 if (!q) { alert('请输入资产编号或物资名称'); return; }
-                // 先用资产编号跳转；如果找不到，服务端会按名字兜底
                 window.open('/search_item?q=' + encodeURIComponent(q), '_blank');
             }
         </script>
@@ -882,25 +911,49 @@ def portal():
 
         <div class="grid">
             <div class="section">
-                <div class="section-title"><span class="icon">📊</span>库存看板</div>
-                <a class="link-item" href="/dashboard" target="_blank">
-                    <div><div class="label">全局看板</div><div class="desc">所有部门物资库存总览</div></div>
+                <div class="section-title"><span class="icon">📦</span>库存看板</div>
+                <a class="link-item" href="/inventory" target="_blank">
+                    <div><div class="label">全局库存总览</div><div class="desc">所有部门物资现有库存</div></div>
                     <div class="arrow">›</div>
                 </a>
-                <a class="link-item" href="/dashboard?dept=综合部" target="_blank">
-                    <div><div class="label">综合部看板</div><div class="desc">综合部物资库存</div></div>
+                <a class="link-item" href="/inventory?dept=综合部" target="_blank">
+                    <div><div class="label">综合部库存</div><div class="desc">综合部现有物资清单</div></div>
                     <div class="arrow">›</div>
                 </a>
-                <a class="link-item" href="/dashboard?dept=工程部" target="_blank">
-                    <div><div class="label">工程部看板</div><div class="desc">工程部物资库存</div></div>
+                <a class="link-item" href="/inventory?dept=工程部" target="_blank">
+                    <div><div class="label">工程部库存</div><div class="desc">工程部现有物资清单</div></div>
                     <div class="arrow">›</div>
                 </a>
-                <a class="link-item" href="/dashboard?dept=秩序部" target="_blank">
-                    <div><div class="label">秩序部看板</div><div class="desc">秩序部物资库存</div></div>
+                <a class="link-item" href="/inventory?dept=秩序部" target="_blank">
+                    <div><div class="label">秩序部库存</div><div class="desc">秩序部现有物资清单</div></div>
                     <div class="arrow">›</div>
                 </a>
-                <a class="link-item" href="/dashboard?dept=客服部" target="_blank">
-                    <div><div class="label">客服部看板</div><div class="desc">客服部物资库存</div></div>
+                <a class="link-item" href="/inventory?dept=客服部" target="_blank">
+                    <div><div class="label">客服部库存</div><div class="desc">客服部现有物资清单</div></div>
+                    <div class="arrow">›</div>
+                </a>
+            </div>
+
+            <div class="section">
+                <div class="section-title"><span class="icon">🚨</span>预警看板</div>
+                <a class="link-item" href="/alert" target="_blank">
+                    <div><div class="label">全部预警</div><div class="desc">所有缺货物资汇总</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/alert?dept=综合部" target="_blank">
+                    <div><div class="label">综合部预警</div><div class="desc">综合部缺货清单</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/alert?dept=工程部" target="_blank">
+                    <div><div class="label">工程部预警</div><div class="desc">工程部缺货清单</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/alert?dept=秩序部" target="_blank">
+                    <div><div class="label">秩序部预警</div><div class="desc">秩序部缺货清单</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/alert?dept=客服部" target="_blank">
+                    <div><div class="label">客服部预警</div><div class="desc">客服部缺货清单</div></div>
                     <div class="arrow">›</div>
                 </a>
             </div>
@@ -924,7 +977,7 @@ def portal():
             <div class="section">
                 <div class="section-title"><span class="icon">⚙️</span>系统工具</div>
                 <a class="link-item" href="/api/export_links" target="_blank">
-                    <div><div class="label">导出全部物资链接</div><div class="desc">物资名称 + 资产编号 + 专属链接（CSV格式）</div></div>
+                    <div><div class="label">导出全部物资链接</div><div class="desc">物资名称 + 资产编号 + 专属链接</div></div>
                     <div class="arrow">›</div>
                 </a>
                 <a class="link-item" href="/api/check_alerts" target="_blank">
@@ -953,36 +1006,6 @@ def portal():
     </body>
     </html>
     '''
-
-@app.route('/search_item')
-def search_item():
-    """按资产编号或名称搜索物资，找到后跳转到详情页"""
-    q = request.args.get('q', '').strip()
-    if not q:
-        return "<script>alert('请输入搜索内容');history.back();</script>"
-    conn = get_db()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"USE {MYSQL_DATABASE}")
-            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code=%s OR name=%s) LIMIT 1', (q, q))
-            row = cursor.fetchone()
-            if row:
-                return f"<script>location.href='/item/{row['id']}';</script>"
-            # 模糊匹配
-            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code LIKE %s OR name LIKE %s) LIMIT 10', (f'%{q}%', f'%{q}%'))
-            rows = cursor.fetchall()
-            if len(rows) == 1:
-                return f"<script>location.href='/item/{rows[0]['id']}';</script>"
-            if len(rows) == 0:
-                return f"<h2 style='text-align:center;margin-top:80px;font-family:sans-serif;'>没有找到「{q}」<br><br><a href='/portal' style='color:#333;'>返回导航</a></h2>"
-            # 多个匹配，列出选项
-            html = f"<html><head><meta charset='UTF-8'><title>搜索结果</title><style>body{{font-family:-apple-system,sans-serif;background:#f0f2f5;padding:20px;}}a{{display:block;background:white;padding:14px 18px;margin-bottom:8px;border-radius:10px;color:#333;text-decoration:none;box-shadow:0 2px 6px rgba(0,0,0,0.05);}}a:hover{{background:#eef2f7;}}</style></head><body><h2>找到 {len(rows)} 条匹配：</h2>"
-            for r in rows:
-                html += f"<a href='/item/{r['id']}'>{r['name']}</a>"
-            html += "<p style='text-align:center;margin-top:20px;'><a href='/portal' style='display:inline-block;background:#333;color:white;padding:10px 20px;border-radius:8px;'>返回导航</a></p></body></html>"
-            return html
-    finally:
-        conn.close()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
