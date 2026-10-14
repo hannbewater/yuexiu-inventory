@@ -772,5 +772,161 @@ def check_alerts():
     ok = send_alert_to_group(msg, list(at_set))
     return f"✅ 已推送，共@ {len(at_set)}人" if ok else "❌ 推送失败"
 
+@app.route('/portal')
+def portal():
+    """统一导航入口"""
+    return '''
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>环球梦大厦 · 系统导航</title>
+        <style>
+            * { box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
+            .header { display: flex; align-items: center; background: linear-gradient(135deg, #fff, #f8fafc); padding: 22px 26px; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 20px; }
+            .header img { height: 52px; margin-right: 18px; }
+            .header .title-block { flex: 1; }
+            .header .project-name { font-size: 26px; font-weight: 800; color: #1a1a1a; letter-spacing: 2px; }
+            .header .sub-title { font-size: 12px; color: #999; margin-top: 4px; letter-spacing: 4px; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+            .section { background: white; border-radius: 16px; padding: 20px 22px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+            .section-title { font-size: 15px; font-weight: 700; color: #333; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid #f0f2f5; display: flex; align-items: center; }
+            .section-title .icon { margin-right: 8px; font-size: 18px; }
+            .link-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; margin-bottom: 8px; background: #f8fafc; border-radius: 10px; text-decoration: none; color: #333; transition: all 0.15s; }
+            .link-item:hover { background: #eef2f7; transform: translateX(3px); }
+            .link-item:last-child { margin-bottom: 0; }
+            .link-item .label { font-size: 14px; font-weight: 600; }
+            .link-item .desc { font-size: 11px; color: #999; margin-top: 2px; }
+            .link-item .arrow { color: #ccc; font-size: 16px; }
+            .quick-input { display: flex; gap: 8px; margin-top: 6px; }
+            .quick-input input { flex: 1; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; outline: none; }
+            .quick-input input:focus { border-color: #333; }
+            .quick-input button { padding: 10px 18px; background: #333; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+            .footer { text-align: center; color: #bbb; font-size: 12px; margin-top: 30px; padding-bottom: 20px; }
+        </style>
+        <script>
+            function gotoItem() {
+                const q = document.getElementById('item_search').value.trim();
+                if (!q) { alert('请输入资产编号或物资名称'); return; }
+                // 先用资产编号跳转；如果找不到，服务端会按名字兜底
+                window.open('/search_item?q=' + encodeURIComponent(q), '_blank');
+            }
+        </script>
+    </head>
+    <body>
+        <div class="header">
+            <img src="/static/logo.png" alt="越秀服务" onerror="this.style.display='none'">
+            <div class="title-block">
+                <div class="project-name">环球梦大厦</div>
+                <div class="sub-title">物资库存系统 · 统一导航</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="section">
+                <div class="section-title"><span class="icon">📊</span>库存看板</div>
+                <a class="link-item" href="/dashboard" target="_blank">
+                    <div><div class="label">全局看板</div><div class="desc">所有部门物资库存总览</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/dashboard?dept=综合部" target="_blank">
+                    <div><div class="label">综合部看板</div><div class="desc">综合部物资库存</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/dashboard?dept=工程部" target="_blank">
+                    <div><div class="label">工程部看板</div><div class="desc">工程部物资库存</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/dashboard?dept=秩序部" target="_blank">
+                    <div><div class="label">秩序部看板</div><div class="desc">秩序部物资库存</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/dashboard?dept=客服部" target="_blank">
+                    <div><div class="label">客服部看板</div><div class="desc">客服部物资库存</div></div>
+                    <div class="arrow">›</div>
+                </a>
+            </div>
+
+            <div class="section">
+                <div class="section-title"><span class="icon">🛠️</span>管理后台</div>
+                <a class="link-item" href="/admin" target="_blank">
+                    <div><div class="label">物资管理</div><div class="desc">改库存、改预警值、新增、删除</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/admin/upload_qrcode" target="_blank">
+                    <div><div class="label">上传二维码表</div><div class="desc">同步草料二维码短码到数据库</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/admin/logs" target="_blank">
+                    <div><div class="label">操作日志</div><div class="desc">所有后台操作的历史记录</div></div>
+                    <div class="arrow">›</div>
+                </a>
+            </div>
+
+            <div class="section">
+                <div class="section-title"><span class="icon">⚙️</span>系统工具</div>
+                <a class="link-item" href="/api/export_links" target="_blank">
+                    <div><div class="label">导出全部物资链接</div><div class="desc">物资名称 + 资产编号 + 专属链接（CSV格式）</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/api/check_alerts" target="_blank">
+                    <div><div class="label">立即触发预警推送</div><div class="desc">手动检查缺货并推送到钉钉群</div></div>
+                    <div class="arrow">›</div>
+                </a>
+                <a class="link-item" href="/api/init_data" target="_blank" onclick="return confirm('确定要重新导入物资数据吗？此操作会清空现有物资和流水！')">
+                    <div><div class="label">重新导入物资数据</div><div class="desc">从 full_items.xlsx 重新导入（谨慎操作）</div></div>
+                    <div class="arrow">›</div>
+                </a>
+            </div>
+
+            <div class="section">
+                <div class="section-title"><span class="icon">🔍</span>快速查物资</div>
+                <div class="desc" style="font-size:12px; color:#888; margin-bottom:10px;">输入资产编号（如 BG-0099）或物资名称，回车直达详情页</div>
+                <div class="quick-input">
+                    <input id="item_search" placeholder="资产编号或名称" onkeydown="if(event.key==='Enter') gotoItem()">
+                    <button onclick="gotoItem()">查询</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            数据实时同步 · 环球梦大厦物业服务中心
+        </div>
+    </body>
+    </html>
+    '''
+
+@app.route('/search_item')
+def search_item():
+    """按资产编号或名称搜索物资，找到后跳转到详情页"""
+    q = request.args.get('q', '').strip()
+    if not q:
+        return "<script>alert('请输入搜索内容');history.back();</script>"
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"USE {MYSQL_DATABASE}")
+            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code=%s OR name=%s) LIMIT 1', (q, q))
+            row = cursor.fetchone()
+            if row:
+                return f"<script>location.href='/item/{row['id']}';</script>"
+            # 模糊匹配
+            cursor.execute('SELECT id, name FROM items WHERE is_deleted=0 AND (asset_code LIKE %s OR name LIKE %s) LIMIT 10', (f'%{q}%', f'%{q}%'))
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return f"<script>location.href='/item/{rows[0]['id']}';</script>"
+            if len(rows) == 0:
+                return f"<h2 style='text-align:center;margin-top:80px;font-family:sans-serif;'>没有找到「{q}」<br><br><a href='/portal' style='color:#333;'>返回导航</a></h2>"
+            # 多个匹配，列出选项
+            html = f"<html><head><meta charset='UTF-8'><title>搜索结果</title><style>body{{font-family:-apple-system,sans-serif;background:#f0f2f5;padding:20px;}}a{{display:block;background:white;padding:14px 18px;margin-bottom:8px;border-radius:10px;color:#333;text-decoration:none;box-shadow:0 2px 6px rgba(0,0,0,0.05);}}a:hover{{background:#eef2f7;}}</style></head><body><h2>找到 {len(rows)} 条匹配：</h2>"
+            for r in rows:
+                html += f"<a href='/item/{r['id']}'>{r['name']}</a>"
+            html += "<p style='text-align:center;margin-top:20px;'><a href='/portal' style='display:inline-block;background:#333;color:white;padding:10px 20px;border-radius:8px;'>返回导航</a></p></body></html>"
+            return html
+    finally:
+        conn.close()
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=False)
